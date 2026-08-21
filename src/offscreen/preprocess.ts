@@ -2,8 +2,6 @@
 // float32 tensor. The letterbox parameters are returned so detections and masks
 // can be mapped back to original image coordinates.
 
-import { PIPELINE } from '../shared/config';
-
 export type Letterbox = {
   size: number; // square model input (e.g. 640)
   ratio: number; // scale applied to the original image
@@ -20,8 +18,7 @@ export type Preprocessed = {
 
 const PAD_VALUE = 114; // standard YOLO gray padding
 
-export function preprocess(bitmap: ImageBitmap): Preprocessed {
-  const size = PIPELINE.modelInputSize;
+export function preprocess(bitmap: ImageBitmap, size: number): Preprocessed {
   const srcW = bitmap.width;
   const srcH = bitmap.height;
   const ratio = Math.min(size / srcW, size / srcH);

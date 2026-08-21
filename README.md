@@ -13,8 +13,14 @@ Built with **CRXJS + Vite + TypeScript**, with in-browser inference via
 
 ```bash
 npm install            # also copies ORT wasm into public/ort (postinstall)
-npm run fetch:models   # downloads YOLOv8n-seg.onnx into public/models (~13 MB)
+npm run fetch:models   # downloads the FoodSeg103 model to public/models (~14 MB)
 npm run build          # outputs the unpacked extension into dist/
+```
+
+Prefer the COCO model instead (more precise on its 10 classes, less coverage)?
+
+```bash
+MODEL_URL="https://cdn.jsdelivr.net/gh/Hyuto/yolov8-seg-onnxruntime-web@2f404048359f26bc7d00f80e9a6f10e3b19b8ced/public/model/yolov8n-seg.onnx" npm run fetch:models
 ```
 
 Then load it in Chrome:
@@ -79,11 +85,32 @@ content: Map.get(imgId) → position overlay <img> over the element
 
 ### The model
 
-Default is stock **YOLOv8n-seg (COCO)**. COCO already includes several food
-classes — pizza, cake, sandwich, donut, hot dog, banana, apple, orange, broccoli,
-carrot — so the detection pass **doubles as the food gate** and the mask
-prototypes give the segmentation. See `src/offscreen/coco.ts` for the food-class
-set and `src/offscreen/model.ts` for the decode.
+Default is **YOLOv8-seg fine-tuned on FoodSeg103** (104 ingredient classes incl.
+background) — [magnusdtd/yolov8-foodseg103](https://huggingface.co/magnusdtd/yolov8-foodseg103).
+Every non-background class is food, so the detection pass **doubles as the food
+gate** and the mask prototypes give the segmentation. Coverage is far broader
+than COCO (ramen, sushi, noodles, rice, curry ingredients, …).
+
+The pipeline reads input size, class count, and prototype dimensions **from the
+loaded model**, so any standard YOLOv8-seg export works with no code change:
+
+| Model | Input | Classes | Protos | Food gate |
+|---|---|---|---|---|
+| FoodSeg103 (default) | 768² | 104 (bg + 103 foods) | 192² | every class but background |
+| COCO YOLOv8n-seg | 640² | 80 | 160² | the 10 COCO food classes |
+
+The gate auto-selects by class count (`MODEL.kind: 'auto'` in `config.ts`); force
+it with `'coco'` / `'foodseg103'`.
+
+**Accuracy trade-off (measured):** FoodSeg103 spreads confidence across 104
+fine-grained classes and generalizes imperfectly to stock photos, so its scores
+run lower than COCO's (e.g. it labels a clean pizza faintly and wrongly, ~0.20).
+Because masking keys off the detection *region*, not the label, a lower
+`scoreThreshold` (default **0.15**) still masks these foods correctly; the model's
+background class keeps non-food (tested on a street/bus scene) from triggering
+even at low thresholds. Labels in the HUD may be noisy — that's cosmetic. If you
+want rock-solid labels on common Western foods and don't need broad coverage, the
+COCO export (below) is more precise on its 10 classes.
 
 ---
 
@@ -108,16 +135,21 @@ public/
 
 ---
 
-## Swapping in a better model (out-of-session upgrade)
+## Swapping in another model
 
-The pipeline is model-agnostic by design. To widen food coverage:
+The pipeline reads input size, output names, class count, and prototype
+dimensions from the loaded session, so any standard YOLOv8-seg ONNX export drops
+in with no code change:
 
-1. Fine-tune `YOLO11n-seg` / `YOLOv8n-seg` on **FoodSeg103** (or UEC-FoodPix),
-   export to ONNX at 640×640, opset 12.
-2. Drop it in as `public/models/yolov8n-seg.onnx` (or point `MODEL_URL` at it).
-3. If the class layout changes, update `COCO_CLASSES` / `FOOD_CLASS_IDS` in
-   `src/offscreen/coco.ts`. No pipeline changes needed — the model wrapper reads
-   input/output names from the session at runtime.
+1. Export to ONNX (`yolo export model=your-seg.pt format=onnx imgsz=640 opset=12`)
+   or point `MODEL_URL` at a hosted `.onnx`, then `npm run fetch:models` — it is
+   always saved as `public/models/food-model.onnx`.
+2. The food gate auto-selects by class count. For a fully custom class set, add a
+   label table and, if needed, a `FoodPolicy` in `src/offscreen/model.ts`.
+
+If your export's class order differs from the FoodSeg103 list in
+`src/offscreen/foodseg103.ts`, HUD labels may be off — cosmetic only, masking is
+unaffected.
 
 ---
 

@@ -36,8 +36,23 @@ export const PIPELINE = {
   maxConcurrent: 2,
   // Longest edge fed to the segmentation model input (YOLOv8-seg uses 640).
   modelInputSize: 640,
-  // Confidence threshold for keeping a detection.
-  scoreThreshold: 0.25,
+  // Confidence threshold for keeping a detection. Tuned for the FoodSeg103 model,
+  // which spreads confidence across 104 fine-grained classes and so scores lower
+  // than COCO (validated: 0.15 masks pizza/ramen/sushi while a bus stays clean —
+  // its background class suppresses non-food even at low thresholds). Raise toward
+  // 0.25 if using the COCO model or if you see false positives.
+  scoreThreshold: 0.15,
   // Mask binarization threshold (after sigmoid).
   maskThreshold: 0.5,
+} as const;
+
+// Which model file the offscreen document loads, and how to interpret its
+// classes. `npm run fetch:models` writes to MODEL.path.
+//   - kind 'auto'       : pick the gate from the class count (80 => COCO subset,
+//                         otherwise treat every class as food). Safe default.
+//   - kind 'coco'       : force the COCO food-class subset gate.
+//   - kind 'foodseg103' : force every detected class to count as food.
+export const MODEL = {
+  path: 'models/food-model.onnx',
+  kind: 'auto' as 'auto' | 'coco' | 'foodseg103',
 } as const;
