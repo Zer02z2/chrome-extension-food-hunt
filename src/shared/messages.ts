@@ -28,11 +28,24 @@ export type SettingsChanged = {
 };
 
 // Sent from the service worker to the offscreen document to forward a job.
-export type OffscreenJob = MaskRequest & {
-  // no extra fields today; kept as an alias so the routing intent is explicit
+// A DISTINCT type (not MASK_REQUEST) is essential: chrome.runtime.sendMessage
+// from the content script is also delivered to the offscreen document, so the
+// offscreen must only ever act on OFFSCREEN_JOB — the SW-routed copy — and
+// ignore the raw content broadcast.
+export type OffscreenJob = {
+  type: 'OFFSCREEN_JOB';
+  requestId: string;
+  imgId: string;
+  imageUrl: string;
+  naturalWidth: number;
+  naturalHeight: number;
 };
 
-export type AnyMessage = MaskRequest | MaskResult | SettingsChanged;
+export type AnyMessage = MaskRequest | MaskResult | SettingsChanged | OffscreenJob;
+
+export function isOffscreenJob(m: unknown): m is OffscreenJob {
+  return !!m && typeof m === 'object' && (m as AnyMessage).type === 'OFFSCREEN_JOB';
+}
 
 export function isMaskRequest(m: unknown): m is MaskRequest {
   return !!m && typeof m === 'object' && (m as AnyMessage).type === 'MASK_REQUEST';

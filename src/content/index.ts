@@ -5,7 +5,7 @@
 import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
 import { loadSettings } from '../shared/config';
-import type { MaskRequest } from '../shared/messages';
+import { isMaskResult, type MaskRequest } from '../shared/messages';
 
 console.log('[foodmask][content] loaded on', location.href);
 
@@ -59,6 +59,31 @@ function shorten(url: string): string {
     return url.slice(0, 22);
   }
 }
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!isMaskResult(msg)) return;
+  if (!registry.has(msg.imgId)) return; // not ours / element retired
+
+  const pendingCount = Math.max(0, hud.snapshot.pending - 1);
+  hud.update({ pending: pendingCount });
+  if (pendingCount === 0) hud.setBusy(false);
+
+  if (msg.error) {
+    hud.log(`err ${msg.imgId.slice(0, 6)} — ${msg.error}`);
+    return;
+  }
+
+  if (msg.isFood) {
+    hud.update({ food: hud.snapshot.food + 1 });
+    hud.log(`food ✓ ${msg.imgId.slice(0, 6)}`);
+    // Overlay rendering arrives in Phase 5.
+    if (msg.overlayPngDataUrl) {
+      hud.update({ masked: hud.snapshot.masked + 1 });
+    }
+  } else {
+    hud.log(`not food ${msg.imgId.slice(0, 6)}`);
+  }
+});
 
 async function init() {
   const settings = await loadSettings();
