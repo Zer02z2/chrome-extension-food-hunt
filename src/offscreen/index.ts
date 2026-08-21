@@ -2,7 +2,7 @@
 // replies to SW-routed jobs. All heavy compute (Canvas, WebGPU, ONNX) lives here.
 
 import { Pipeline } from './pipeline';
-import { isOffscreenJob, isSettingsChanged } from './../shared/messages';
+import { isOffscreenJob, isSettingsChanged, isCancelJob } from './../shared/messages';
 import { loadSettings } from '../shared/config';
 
 console.log('[foodmask][offscreen] loaded');
@@ -16,6 +16,11 @@ const initDone = pipeline
 chrome.runtime.onMessage.addListener((msg) => {
   if (isSettingsChanged(msg)) {
     pipeline.updateSettings({ enabled: msg.enabled, blurPx: msg.blurPx });
+    return;
+  }
+
+  if (isCancelJob(msg)) {
+    pipeline.cancel(msg.requestId);
     return;
   }
 

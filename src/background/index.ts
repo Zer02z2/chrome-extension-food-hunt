@@ -5,6 +5,7 @@
 import {
   isMaskRequest,
   isMaskResult,
+  isCancelJob,
   type MaskResult,
   type OffscreenJob,
 } from '../shared/messages';
@@ -88,6 +89,17 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       }
     })();
     return; // no synchronous response
+  }
+
+  // Cancellation from a content script: forget the mapping and tell the offscreen
+  // worker to drop the job if it hasn't started.
+  if (isCancelJob(msg)) {
+    pending.delete(msg.requestId);
+    // Only forward if the offscreen doc exists; if it doesn't, there's no job.
+    void hasOffscreen().then((exists) => {
+      if (exists) chrome.runtime.sendMessage(msg).catch(() => {});
+    });
+    return;
   }
 
   // From the offscreen document: deliver the result to the originating tab.

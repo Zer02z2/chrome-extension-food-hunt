@@ -9,12 +9,16 @@ import type { MaskResult, OffscreenJob } from '../shared/messages';
 
 type CacheEntry = { isFood: boolean; overlayPngDataUrl?: string };
 
+const CANCELLED = Symbol('cancelled');
+type Waiter = { id: string; start: () => void; cancel: () => void };
+
 export class Pipeline {
   private model = new FoodModel();
   private ready: Promise<void> | null = null;
   private settings: Settings = { enabled: true, blurPx: 16 };
   private active = 0;
-  private queue: Array<() => void> = [];
+  private waiters: Waiter[] = [];
+  private cancelled = new Set<string>();
   private cache = new Map<string, CacheEntry>();
 
   get provider() {
@@ -38,19 +42,40 @@ export class Pipeline {
     return this.ready;
   }
 
+  // Drop a job that is still queued. In-flight inference can't be aborted, but
+  // its result will be discarded by the (now absent) target on the page.
+  cancel(requestId: string) {
+    this.cancelled.add(requestId);
+    const i = this.waiters.findIndex((w) => w.id === requestId);
+    if (i >= 0) {
+      const [w] = this.waiters.splice(i, 1);
+      w.cancel();
+    }
+  }
+
   async process(job: OffscreenJob): Promise<MaskResult> {
     const cached = this.cache.get(job.imageUrl);
     if (cached) {
       return { type: 'MASK_RESULT', ...idOf(job), ...cached };
     }
 
-    await this.acquire();
+    try {
+      await this.acquire(job.requestId);
+    } catch {
+      return cancelledResult(job);
+    }
+
     const t0 = performance.now();
     try {
       await this.ensureModel();
 
       const bitmap = await urlToBitmap(job.imageUrl);
       const tFetch = performance.now();
+
+      if (this.cancelled.has(job.requestId)) {
+        bitmap.close();
+        return cancelledResult(job);
+      }
 
       const result = await this.model.analyze(bitmap);
       const tInfer = performance.now();
@@ -85,27 +110,33 @@ export class Pipeline {
         error: String((err as Error)?.message ?? err),
       };
     } finally {
+      this.cancelled.delete(job.requestId);
       this.release();
     }
   }
 
-  private acquire(): Promise<void> {
+  private acquire(id: string): Promise<void> {
+    if (this.cancelled.has(id)) return Promise.reject(CANCELLED);
     if (this.active < PIPELINE.maxConcurrent) {
       this.active++;
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
-      this.queue.push(() => {
-        this.active++;
-        resolve();
+    return new Promise<void>((resolve, reject) => {
+      this.waiters.push({
+        id,
+        start: () => {
+          this.active++;
+          resolve();
+        },
+        cancel: () => reject(CANCELLED),
       });
     });
   }
 
   private release() {
     this.active--;
-    const next = this.queue.shift();
-    if (next) next();
+    const next = this.waiters.shift();
+    if (next) next.start();
   }
 
   private logTimings(
@@ -128,6 +159,10 @@ export class Pipeline {
 
 function idOf(job: OffscreenJob) {
   return { requestId: job.requestId, imgId: job.imgId };
+}
+
+function cancelledResult(job: OffscreenJob): MaskResult {
+  return { type: 'MASK_RESULT', ...idOf(job), isFood: false, error: 'cancelled' };
 }
 
 // Fetch inside the offscreen document so extension host_permissions grant

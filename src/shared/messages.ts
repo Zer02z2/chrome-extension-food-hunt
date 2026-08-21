@@ -41,7 +41,20 @@ export type OffscreenJob = {
   naturalHeight: number;
 };
 
-export type AnyMessage = MaskRequest | MaskResult | SettingsChanged | OffscreenJob;
+// Content -> SW -> offscreen: drop a job that is no longer needed (image left
+// the viewport or was removed before processing finished).
+export type CancelJob = {
+  type: 'CANCEL_JOB';
+  requestId: string;
+  imgId: string;
+};
+
+export type AnyMessage =
+  | MaskRequest
+  | MaskResult
+  | SettingsChanged
+  | OffscreenJob
+  | CancelJob;
 
 export function isOffscreenJob(m: unknown): m is OffscreenJob {
   return !!m && typeof m === 'object' && (m as AnyMessage).type === 'OFFSCREEN_JOB';
@@ -57,4 +70,8 @@ export function isMaskResult(m: unknown): m is MaskResult {
 
 export function isSettingsChanged(m: unknown): m is SettingsChanged {
   return !!m && typeof m === 'object' && (m as AnyMessage).type === 'SETTINGS_CHANGED';
+}
+
+export function isCancelJob(m: unknown): m is CancelJob {
+  return !!m && typeof m === 'object' && (m as AnyMessage).type === 'CANCEL_JOB';
 }

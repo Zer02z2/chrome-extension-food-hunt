@@ -1,27 +1,42 @@
 // Content script orchestrator.
-// Owns the imgId -> element registry, drives discovery, and talks to the SW.
-// Overlay rendering is added in Phase 5.
+// Owns the imgId -> element registry, drives discovery, renders overlays, and
+// talks to the SW. Cancels in-flight jobs whose image scrolls away.
 
 import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
 import { OverlayManager } from './overlay';
 import { loadSettings } from '../shared/config';
-import { isMaskResult, type MaskRequest } from '../shared/messages';
+import { isMaskResult, type MaskRequest, type CancelJob } from '../shared/messages';
 
 console.log('[foodmask][content] loaded on', location.href);
 
 const registry = new Map<string, HTMLImageElement>();
-const requestByImg = new Map<string, string>(); // imgId -> requestId
+const requestByImg = new Map<string, string>(); // imgId -> requestId (in-flight)
 const hud = new StatusHud();
 const overlays = new OverlayManager();
 
 let enabled = true;
 
+// Watches in-flight images; if one leaves the viewport before its result lands,
+// cancel the (possibly still-queued) job so we don't waste compute.
+const inflightIO = new IntersectionObserver(
+  (entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting) continue;
+      const el = e.target as HTMLImageElement;
+      const imgId = el.dataset.foodmaskId;
+      if (imgId && requestByImg.has(imgId)) cancelImage(imgId);
+    }
+  },
+  { rootMargin: '300px' }, // a bit of hysteresis so tiny scrolls don't thrash
+);
+
 const discovery = new ImageDiscovery({
   onDiscovered: (img) => queueImage(img),
-  onReset: (imgId) => {
+  onReset: (imgId, el) => {
+    inflightIO.unobserve(el);
+    if (requestByImg.has(imgId)) cancelImage(imgId, el);
     registry.delete(imgId);
-    requestByImg.delete(imgId);
     overlays.remove(imgId); // stale content — drop its mask
   },
 });
@@ -32,6 +47,7 @@ function queueImage(img: DiscoveredImage) {
 
   const requestId = crypto.randomUUID();
   requestByImg.set(img.imgId, requestId);
+  inflightIO.observe(img.el);
 
   const msg: MaskRequest = {
     type: 'MASK_REQUEST',
@@ -47,10 +63,22 @@ function queueImage(img: DiscoveredImage) {
   hud.log(`scan ${shorten(img.imageUrl)}`);
 
   chrome.runtime.sendMessage(msg).catch((err) => {
-    // SW may be asleep/restarting; the message API auto-wakes it, but a hard
-    // failure (e.g. during reload) should not throw uncaught.
     console.warn('[foodmask][content] sendMessage failed', err);
   });
+}
+
+function cancelImage(imgId: string, el?: HTMLImageElement) {
+  const requestId = requestByImg.get(imgId);
+  if (!requestId) return;
+  requestByImg.delete(imgId);
+  const target = el ?? registry.get(imgId);
+  if (target) inflightIO.unobserve(target);
+
+  hud.update({ pending: Math.max(0, hud.snapshot.pending - 1) });
+  if (hud.snapshot.pending === 0) hud.setBusy(false);
+
+  const msg: CancelJob = { type: 'CANCEL_JOB', requestId, imgId };
+  chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
 function shorten(url: string): string {
@@ -65,28 +93,55 @@ function shorten(url: string): string {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (!isMaskResult(msg)) return;
-  if (!registry.has(msg.imgId)) return; // not ours / element retired
 
-  const pendingCount = Math.max(0, hud.snapshot.pending - 1);
-  hud.update({ pending: pendingCount });
-  if (pendingCount === 0) hud.setBusy(false);
+  const wasInflight = requestByImg.has(msg.imgId);
+  requestByImg.delete(msg.imgId);
+  const target = registry.get(msg.imgId);
+  if (target) inflightIO.unobserve(target);
 
+  if (wasInflight) {
+    const pendingCount = Math.max(0, hud.snapshot.pending - 1);
+    hud.update({ pending: pendingCount });
+    if (pendingCount === 0) hud.setBusy(false);
+  }
+
+  if (!target) return; // element retired
   if (msg.error) {
-    hud.log(`err ${msg.imgId.slice(0, 6)} — ${msg.error}`);
+    if (msg.error !== 'cancelled') hud.log(`err ${msg.imgId.slice(0, 6)} — ${msg.error}`);
     return;
   }
 
   if (msg.isFood) {
     hud.update({ food: hud.snapshot.food + 1 });
     hud.log(`food ✓ ${msg.imgId.slice(0, 6)}`);
-    const target = registry.get(msg.imgId);
-    if (target && msg.overlayPngDataUrl) {
+    if (msg.overlayPngDataUrl && enabled) {
       overlays.show(msg.imgId, target, msg.overlayPngDataUrl);
       hud.update({ masked: hud.snapshot.masked + 1 });
     }
   } else {
     hud.log(`not food ${msg.imgId.slice(0, 6)}`);
   }
+});
+
+function applyEnabled(next: boolean) {
+  if (next === enabled) return;
+  enabled = next;
+  hud.setEnabled(enabled);
+  if (enabled) {
+    discovery.start();
+    hud.log('enabled');
+  } else {
+    discovery.stop();
+    overlays.clear();
+    for (const imgId of [...requestByImg.keys()]) cancelImage(imgId);
+    hud.log('disabled');
+  }
+}
+
+// React to popup changes (written to chrome.storage.local).
+chrome.storage.onChanged.addListener((_changes, area) => {
+  if (area !== 'local') return;
+  void loadSettings().then((s) => applyEnabled(s.enabled));
 });
 
 async function init() {
@@ -102,7 +157,6 @@ async function init() {
   console.log('[foodmask][content] initialized, enabled =', enabled);
 }
 
-// Kick off once the DOM is ready enough to have a body.
 if (document.body) {
   void init();
 } else {
