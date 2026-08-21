@@ -4,6 +4,7 @@
 
 import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
+import { OverlayManager } from './overlay';
 import { loadSettings } from '../shared/config';
 import { isMaskResult, type MaskRequest } from '../shared/messages';
 
@@ -12,6 +13,7 @@ console.log('[foodmask][content] loaded on', location.href);
 const registry = new Map<string, HTMLImageElement>();
 const requestByImg = new Map<string, string>(); // imgId -> requestId
 const hud = new StatusHud();
+const overlays = new OverlayManager();
 
 let enabled = true;
 
@@ -20,6 +22,7 @@ const discovery = new ImageDiscovery({
   onReset: (imgId) => {
     registry.delete(imgId);
     requestByImg.delete(imgId);
+    overlays.remove(imgId); // stale content — drop its mask
   },
 });
 
@@ -76,8 +79,9 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.isFood) {
     hud.update({ food: hud.snapshot.food + 1 });
     hud.log(`food ✓ ${msg.imgId.slice(0, 6)}`);
-    // Overlay rendering arrives in Phase 5.
-    if (msg.overlayPngDataUrl) {
+    const target = registry.get(msg.imgId);
+    if (target && msg.overlayPngDataUrl) {
+      overlays.show(msg.imgId, target, msg.overlayPngDataUrl);
       hud.update({ masked: hud.snapshot.masked + 1 });
     }
   } else {
@@ -91,6 +95,7 @@ async function init() {
 
   hud.mount();
   hud.setEnabled(enabled);
+  overlays.mount();
 
   if (enabled) discovery.start();
 
