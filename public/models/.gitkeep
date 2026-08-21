@@ -1,0 +1,2 @@
+# Models are downloaded here by `npm run fetch:models` (see scripts/fetch-models.mjs).
+# The .onnx files themselves are git-ignored.

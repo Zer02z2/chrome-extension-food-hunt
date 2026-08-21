@@ -1,0 +1,25 @@
+{
+  "name": "food-mask-extension",
+  "version": "0.1.0",
+  "description": "On-device Chrome extension that finds food images on any webpage and masks the food.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "postinstall": "node scripts/copy-ort.mjs",
+    "fetch:models": "node scripts/fetch-models.mjs",
+    "prebuild": "node scripts/copy-ort.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.28",
+    "@types/chrome": "^0.0.287",
+    "typescript": "^5.7.2",
+    "vite": "^6.3.5"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.20.1"
+  }
+}
