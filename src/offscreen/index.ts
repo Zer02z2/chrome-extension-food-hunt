@@ -1,23 +1,39 @@
-// Offscreen document — Phase 2 echo stub.
-// Listens ONLY for OFFSCREEN_JOB (the SW-routed copy) and replies with a stubbed
-// MASK_RESULT. Real classification/segmentation replace this in Phases 3–4.
+// Offscreen document entry point. Owns the persistent inference pipeline and
+// replies to SW-routed jobs. All heavy compute (Canvas, WebGPU, ONNX) lives here.
 
-import { isOffscreenJob, type MaskResult } from '../shared/messages';
+import { Pipeline } from './pipeline';
+import { isOffscreenJob, isSettingsChanged } from './../shared/messages';
+import { loadSettings } from '../shared/config';
 
 console.log('[foodmask][offscreen] loaded');
 
+const pipeline = new Pipeline();
+const initDone = pipeline
+  .init()
+  .then(() => console.log(`[foodmask][offscreen] pipeline ready, provider=${pipeline.provider}`))
+  .catch((err) => console.error('[foodmask][offscreen] init failed', err));
+
 chrome.runtime.onMessage.addListener((msg) => {
-  if (!isOffscreenJob(msg)) return;
+  if (isSettingsChanged(msg)) {
+    pipeline.updateSettings({ enabled: msg.enabled, blurPx: msg.blurPx });
+    return;
+  }
 
-  console.log('[foodmask][offscreen] job', msg.imgId, msg.imageUrl);
+  if (isOffscreenJob(msg)) {
+    void (async () => {
+      await initDone;
+      const result = await pipeline.process(msg);
+      chrome.runtime.sendMessage(result).catch((err) => {
+        console.warn('[foodmask][offscreen] reply failed', err);
+      });
+    })();
+    return;
+  }
+});
 
-  const result: MaskResult = {
-    type: 'MASK_RESULT',
-    requestId: msg.requestId,
-    imgId: msg.imgId,
-    isFood: false, // stub — no model yet
-  };
-  chrome.runtime.sendMessage(result).catch((err) => {
-    console.warn('[foodmask][offscreen] reply failed', err);
-  });
+// Pick up settings changes that happen while we're alive even if the broadcast
+// is missed (e.g. set before this doc existed).
+chrome.storage.onChanged.addListener(async (_changes, area) => {
+  if (area !== 'local') return;
+  pipeline.updateSettings(await loadSettings());
 });

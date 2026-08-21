@@ -20,9 +20,13 @@ const root = join(__dirname, '..');
 const dest = join(root, 'public', 'models');
 const outFile = join(dest, 'yolov8n-seg.onnx');
 
+// Standard YOLOv8n-seg (COCO) export: input images[1,3,640,640];
+// outputs output0[1,116,8400] (4 bbox + 80 classes + 32 mask coeffs) and
+// output1[1,32,160,160] (mask prototypes). Pinned to a commit for reproducibility.
+// Override with MODEL_URL to use your own export.
 const MODEL_URL =
   process.env.MODEL_URL ||
-  'https://huggingface.co/onnx-community/yolov8n-seg/resolve/main/onnx/model.onnx';
+  'https://cdn.jsdelivr.net/gh/Hyuto/yolov8-seg-onnxruntime-web@2f404048359f26bc7d00f80e9a6f10e3b19b8ced/public/model/yolov8n-seg.onnx';
 
 async function main() {
   mkdirSync(dest, { recursive: true });
