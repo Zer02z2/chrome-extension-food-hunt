@@ -5,6 +5,7 @@
 import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
 import { OverlayManager } from './overlay';
+import { ScanlineManager } from './scanline';
 import { loadSettings, watchSettings } from '../shared/config';
 import { DEFAULT_MODEL_ID, MODELS, type ModelId } from '../shared/models';
 import { isMaskResult, type MaskRequest, type CancelJob } from '../shared/messages';
@@ -15,6 +16,7 @@ const registry = new Map<string, HTMLImageElement>();
 const requestByImg = new Map<string, string>(); // imgId -> requestId (in-flight)
 const hud = new StatusHud();
 const overlays = new OverlayManager();
+const scanlines = new ScanlineManager(); // sweeping line shown while a job is in flight
 
 let enabled = true;
 let modelId: ModelId = DEFAULT_MODEL_ID;
@@ -50,6 +52,7 @@ function queueImage(img: DiscoveredImage) {
   const requestId = crypto.randomUUID();
   requestByImg.set(img.imgId, requestId);
   inflightIO.observe(img.el);
+  scanlines.start(img.imgId, img.el);
 
   const msg: MaskRequest = {
     type: 'MASK_REQUEST',
@@ -69,6 +72,7 @@ function queueImage(img: DiscoveredImage) {
     if (requestByImg.get(img.imgId) !== requestId) return; // already superseded
     requestByImg.delete(img.imgId);
     inflightIO.unobserve(img.el);
+    scanlines.stop(img.imgId);
     settlePending();
     hud.log(`err ${img.imgId.slice(0, 6)} — not delivered`);
   });
@@ -87,6 +91,7 @@ function cancelImage(imgId: string, el?: HTMLImageElement) {
   requestByImg.delete(imgId);
   const target = el ?? registry.get(imgId);
   if (target) inflightIO.unobserve(target);
+  scanlines.stop(imgId);
 
   settlePending();
 
@@ -111,6 +116,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   requestByImg.delete(msg.imgId);
   const target = registry.get(msg.imgId);
   if (target) inflightIO.unobserve(target);
+  scanlines.stop(msg.imgId); // the scan is over, whatever the verdict
 
   if (wasInflight) settlePending();
 
@@ -143,6 +149,7 @@ function applyEnabled(next: boolean) {
     discovery.stop();
     overlays.clear();
     for (const imgId of [...requestByImg.keys()]) cancelImage(imgId);
+    scanlines.clear();
     hud.log('disabled');
   }
 }
@@ -157,6 +164,7 @@ function applyModel(next: ModelId) {
 
   overlays.clear();
   for (const imgId of [...requestByImg.keys()]) cancelImage(imgId);
+  scanlines.clear();
   registry.clear();
   hud.update({ scanned: 0, food: 0, masked: 0, pending: 0 });
 
