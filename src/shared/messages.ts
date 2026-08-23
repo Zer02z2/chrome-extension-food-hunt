@@ -1,6 +1,8 @@
 // Message contract shared by every extension context.
 // Distinguish senders by `type`, never by ordering.
 
+import type { ModelId } from './models';
+
 export type MaskRequest = {
   type: 'MASK_REQUEST';
   requestId: string; // crypto.randomUUID(), generated in the content script
@@ -25,6 +27,7 @@ export type SettingsChanged = {
   type: 'SETTINGS_CHANGED';
   enabled: boolean;
   blurPx: number;
+  modelId: ModelId;
 };
 
 // Sent from the service worker to the offscreen document to forward a job.

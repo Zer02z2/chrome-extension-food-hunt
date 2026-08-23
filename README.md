@@ -13,14 +13,16 @@ Built with **CRXJS + Vite + TypeScript**, with in-browser inference via
 
 ```bash
 npm install            # also copies ORT wasm into public/ort (postinstall)
-npm run fetch:models   # downloads the FoodSeg103 model to public/models (~14 MB)
+npm run fetch:models   # downloads BOTH models to public/models (~28 MB total)
 npm run build          # outputs the unpacked extension into dist/
 ```
 
-Prefer the COCO model instead (more precise on its 10 classes, less coverage)?
+Both food-detection models ship side by side and are **switched at runtime from
+the popup** — no rebuild. To fetch only one:
 
 ```bash
-MODEL_URL="https://cdn.jsdelivr.net/gh/Hyuto/yolov8-seg-onnxruntime-web@2f404048359f26bc7d00f80e9a6f10e3b19b8ced/public/model/yolov8n-seg.onnx" npm run fetch:models
+MODEL=foodseg103 npm run fetch:models   # broad coverage (default)
+MODEL=coco       npm run fetch:models   # precise on 10 common foods
 ```
 
 Then load it in Chrome:
@@ -33,9 +35,11 @@ For development with hot-reload: `npm run dev` (still load `dist/` unpacked; the
 content script hot-reloads on save).
 
 > **Models are not committed.** `npm run fetch:models` must be run once after
-> cloning. Until it is, the offscreen document logs a model-load error and every
-> image is reported as "not food". Override the source with
-> `MODEL_URL=… npm run fetch:models`, or drop your own `public/models/yolov8n-seg.onnx`.
+> cloning. Until it is, the offscreen document reports
+> `… weights missing — run npm run fetch:models` and every image comes back "not
+> food". If you only fetched one model, selecting the other in the popup produces
+> that same error until you fetch it. Override a source with
+> `MODEL=<id> MODEL_URL=… npm run fetch:models`.
 
 ---
 
@@ -48,7 +52,7 @@ Four contexts, each with one job:
 | **Content script** (`src/content`) | Find images, stamp IDs, request masking, render the returned overlay, show the status HUD |
 | **Service worker** (`src/background`) | Router only: guarantee the offscreen doc exists, correlate requests, route messages |
 | **Offscreen document** (`src/offscreen`) | All compute: fetch image → classify → segment → composite the overlay |
-| **Popup** (`src/popup`) | On/off toggle + blur intensity |
+| **Popup** (`src/popup`) | On/off toggle, blur intensity, **which detection model to use** |
 
 Flow for one image:
 
@@ -59,8 +63,9 @@ content: IntersectionObserver sees a visible <img>
 service worker: reads sender.tab.id, stores requestId→tabId
   → ensureOffscreen(), forward as OFFSCREEN_JOB
 offscreen: fetch(url) → ImageBitmap (host_permissions dodge CORS taint)
-  → YOLOv8n-seg forward pass
-  → any food-class detection? → build union mask → composite blurred overlay
+  → classifier.classify(bitmap) → { isFood, labels, segmentation? }   ← pluggable
+  → not food? reply and stop
+  → food? build mask → composite blurred overlay
   → reply MASK_RESULT { isFood, overlayPngDataUrl? }
 service worker: requestId→tabId → tabs.sendMessage(result)
 content: Map.get(imgId) → position overlay <img> over the element
@@ -80,37 +85,44 @@ content: Map.get(imgId) → position overlay <img> over the element
 - **Images are tracked by stamped ID**, never DOM index.
 - **Overlays cross `sendMessage` as PNG data URLs** (transferables/`ImageBitmap`
   can't be sent).
+- **The model is one swappable function.** Classification is the only
+  model-specific step; masking, compositing, caching, and messaging are shared.
+  See [Adding or swapping a model](#adding-or-swapping-a-model).
 - **ORT wasm is bundled locally** (`public/ort`, via `ort.env.wasm.wasmPaths`).
   MV3 forbids remote code, so a CDN would be blocked by the extension CSP.
 
-### The model
+### The models
 
-Default is **YOLOv8-seg fine-tuned on FoodSeg103** (104 ingredient classes incl.
-background) — [magnusdtd/yolov8-foodseg103](https://huggingface.co/magnusdtd/yolov8-foodseg103).
-Every non-background class is food, so the detection pass **doubles as the food
-gate** and the mask prototypes give the segmentation. Coverage is far broader
-than COCO (ramen, sushi, noodles, rice, curry ingredients, …).
+Two food-categorization models ship together. The popup switches between them at
+runtime; the extension reloads weights lazily and keeps both warm, so flipping
+back and forth after the first load is instant.
 
-The pipeline reads input size, class count, and prototype dimensions **from the
-loaded model**, so any standard YOLOv8-seg export works with no code change:
+| Model | Input | Classes | Protos | Food gate | Score floor |
+|---|---|---|---|---|---|
+| **FoodSeg103** (default) | 768² | 104 (bg + 103 ingredients) | 192² | every class but background | 0.15 |
+| **COCO** YOLOv8n-seg | 640² | 80 | 160² | the 10 COCO food classes | 0.25 |
 
-| Model | Input | Classes | Protos | Food gate |
-|---|---|---|---|---|
-| FoodSeg103 (default) | 768² | 104 (bg + 103 foods) | 192² | every class but background |
-| COCO YOLOv8n-seg | 640² | 80 | 160² | the 10 COCO food classes |
-
-The gate auto-selects by class count (`MODEL.kind: 'auto'` in `config.ts`); force
-it with `'coco'` / `'foodseg103'`.
+- **FoodSeg103** — [magnusdtd/yolov8-foodseg103](https://huggingface.co/magnusdtd/yolov8-foodseg103),
+  fine-tuned on food only, so *every* non-background class is food and the
+  detection pass is itself the gate. Far broader coverage than COCO (ramen,
+  sushi, noodles, rice, curry ingredients, …).
+- **COCO** — stock YOLOv8n-seg. Only ten of its eighty classes are food (pizza,
+  cake, sandwich, donut, hot dog, banana, apple, orange, broccoli, carrot), but
+  it is markedly more precise and better-labelled on those.
 
 **Accuracy trade-off (measured):** FoodSeg103 spreads confidence across 104
 fine-grained classes and generalizes imperfectly to stock photos, so its scores
 run lower than COCO's (e.g. it labels a clean pizza faintly and wrongly, ~0.20).
-Because masking keys off the detection *region*, not the label, a lower
-`scoreThreshold` (default **0.15**) still masks these foods correctly; the model's
-background class keeps non-food (tested on a street/bus scene) from triggering
-even at low thresholds. Labels in the HUD may be noisy — that's cosmetic. If you
-want rock-solid labels on common Western foods and don't need broad coverage, the
-COCO export (below) is more precise on its 10 classes.
+Because masking keys off the detection *region*, not the label, its lower score
+floor (**0.15**) still masks these foods correctly, and the model's background
+class keeps non-food (tested on a street/bus scene) from triggering even that
+low. HUD labels may be noisy — cosmetic only. Pick COCO when you want rock-solid
+labels on common Western foods and don't need breadth.
+
+Per-model tuning (weights path, score floor, display name) lives in
+`src/shared/models.ts`. Input size, class count, and prototype dimensions are
+read from the loaded session, so the 768²/192² and 640²/160² exports above run
+through the same code with no branching.
 
 ---
 
@@ -121,13 +133,24 @@ manifest.config.ts        MV3 manifest (CRXJS)
 vite.config.ts            build config (+ plugin that drops the duplicate ORT wasm)
 scripts/
   copy-ort.mjs            copies ORT wasm/mjs into public/ort (postinstall/prebuild)
-  fetch-models.mjs        downloads the ONNX model into public/models
+  fetch-models.mjs        downloads both ONNX models into public/models
 src/
-  shared/                 message contract + settings/config
+  shared/                 message contract, settings/config, model catalog
   content/                discovery, overlay renderer, status HUD, orchestrator
   background/             service-worker router + offscreen lifecycle
-  offscreen/              ORT runtime, preprocess, model, composite, pipeline
-  popup/                  on/off + blur UI
+  offscreen/
+    classifiers/          ← the pluggable seam: one impl per model
+      types.ts              FoodClassifier contract (image -> is-it-food)
+      yolo-seg.ts           shared YOLOv8-seg engine (forward, decode, NMS)
+      coco.ts               COCO-80 labels + 10-food policy
+      foodseg103.ts         FoodSeg103 labels + all-but-background policy
+      index.ts              ModelId -> warm classifier registry
+    runtime.ts            ORT bootstrap (WebGPU -> WASM)
+    preprocess.ts         letterbox + NCHW tensor
+    mask.ts               verdict -> binary mask at original resolution
+    composite.ts          mask + blur -> PNG overlay
+    pipeline.ts           model-agnostic orchestration
+  popup/                  on/off, blur, and model picker
 public/
   ort/                    ORT runtime (git-ignored, copied from node_modules)
   models/                 *.onnx (git-ignored, fetched)
@@ -135,21 +158,47 @@ public/
 
 ---
 
-## Swapping in another model
+## Adding or swapping a model
 
-The pipeline reads input size, output names, class count, and prototype
-dimensions from the loaded session, so any standard YOLOv8-seg ONNX export drops
-in with no code change:
+The pipeline asks a classifier exactly one question — **is this image food?** —
+and everything downstream (masking, compositing, caching, messaging, the HUD) is
+shared. That one call is the only model-specific line in `pipeline.ts`:
 
-1. Export to ONNX (`yolo export model=your-seg.pt format=onnx imgsz=640 opset=12`)
-   or point `MODEL_URL` at a hosted `.onnx`, then `npm run fetch:models` — it is
-   always saved as `public/models/food-model.onnx`.
-2. The food gate auto-selects by class count. For a fully custom class set, add a
-   label table and, if needed, a `FoodPolicy` in `src/offscreen/model.ts`.
+```ts
+// src/offscreen/classifiers/types.ts
+export interface FoodClassifier {
+  load(): Promise<void>;
+  classify(bitmap: ImageBitmap): Promise<FoodVerdict>;  // { isFood, labels, segmentation? }
+}
+```
 
-If your export's class order differs from the FoodSeg103 list in
-`src/offscreen/foodseg103.ts`, HUD labels may be off — cosmetic only, masking is
+`segmentation` is an optional by-product, not part of the contract. Both shipped
+models are YOLOv8-seg and produce instance masks in the *same* forward pass that
+yields the verdict, so discarding them and re-running a segmenter would double
+the cost for nothing. A pure classifier (say a MobileNet food/not-food head)
+simply omits it and the pipeline blurs the whole image instead — the only honest
+reading of a bare boolean.
+
+> The classifier takes an `ImageBitmap`, not a URL. Fetching happens once in
+> `pipeline.ts` so that cross-origin handling, the concurrency gate, the result
+> cache, and cancellation are implemented once rather than per model.
+
+**Another YOLOv8-seg export** — no new code:
+
+1. `MODEL=coco MODEL_URL=https://…/your-seg.onnx npm run fetch:models`
+   (or export your own: `yolo export model=your-seg.pt format=onnx imgsz=640 opset=12`).
+2. Adjust that entry's `scoreThreshold` in `src/shared/models.ts` if needed.
+
+If your export's class order differs from the tables in
+`src/offscreen/classifiers/`, HUD labels may be off — cosmetic only, masking is
 unaffected.
+
+**A genuinely different model** — three small steps, none of them in the pipeline:
+
+1. Add an entry to `MODELS` in `src/shared/models.ts` (the popup picker builds
+   itself from this catalog).
+2. Implement `FoodClassifier` in `src/offscreen/classifiers/`.
+3. Register the factory in `src/offscreen/classifiers/index.ts`.
 
 ---
 
@@ -164,6 +213,9 @@ unaffected.
   is logged from the offscreen document (`provider=webgpu|wasm`).
 - **In-flight inference isn't abortable.** Cancellation drops still-queued jobs;
   a job already running finishes, but its result is discarded by the page.
+- **Both models stay resident once used.** Switching in the popup loads the new
+  weights lazily and keeps the previous session warm (~30 MB for both) so that
+  flipping back is instant. Restart the browser to release them.
 - **Offscreen lifetime** is currently unbounded for `WORKERS`, but Chrome may add
   idle-closing later. Model load is the only expensive step, so a cold restart is
   cheap.

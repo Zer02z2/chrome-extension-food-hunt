@@ -4,18 +4,27 @@
 import { Pipeline } from './pipeline';
 import { isOffscreenJob, isSettingsChanged, isCancelJob } from './../shared/messages';
 import { loadSettings } from '../shared/config';
+import { modelSpec } from '../shared/models';
 
 console.log('[foodmask][offscreen] loaded');
 
 const pipeline = new Pipeline();
 const initDone = pipeline
   .init()
-  .then(() => console.log(`[foodmask][offscreen] pipeline ready, provider=${pipeline.provider}`))
+  .then(() =>
+    console.log(
+      `[foodmask][offscreen] pipeline ready, model=${modelSpec(pipeline.modelId).name}, provider=${pipeline.provider}`,
+    ),
+  )
   .catch((err) => console.error('[foodmask][offscreen] init failed', err));
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (isSettingsChanged(msg)) {
-    pipeline.updateSettings({ enabled: msg.enabled, blurPx: msg.blurPx });
+    pipeline.updateSettings({
+      enabled: msg.enabled,
+      blurPx: msg.blurPx,
+      modelId: msg.modelId,
+    });
     return;
   }
 

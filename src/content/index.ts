@@ -6,6 +6,7 @@ import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
 import { OverlayManager } from './overlay';
 import { loadSettings } from '../shared/config';
+import { DEFAULT_MODEL_ID, modelSpec, type ModelId } from '../shared/models';
 import { isMaskResult, type MaskRequest, type CancelJob } from '../shared/messages';
 
 console.log('[foodmask][content] loaded on', location.href);
@@ -16,6 +17,7 @@ const hud = new StatusHud();
 const overlays = new OverlayManager();
 
 let enabled = true;
+let modelId: ModelId = DEFAULT_MODEL_ID;
 
 // Watches in-flight images; if one leaves the viewport before its result lands,
 // cancel the (possibly still-queued) job so we don't waste compute.
@@ -138,23 +140,44 @@ function applyEnabled(next: boolean) {
   }
 }
 
+// A model switch invalidates every verdict on the page, so drop the overlays and
+// send everything through the newly selected model.
+function applyModel(next: ModelId) {
+  if (next === modelId) return;
+  modelId = next;
+  hud.setModel(modelSpec(modelId).name);
+  hud.log(`model → ${modelSpec(modelId).name}`);
+
+  overlays.clear();
+  for (const imgId of [...requestByImg.keys()]) cancelImage(imgId);
+  registry.clear();
+  hud.update({ scanned: 0, food: 0, masked: 0, pending: 0 });
+
+  if (enabled) discovery.rescan();
+}
+
 // React to popup changes (written to chrome.storage.local).
 chrome.storage.onChanged.addListener((_changes, area) => {
   if (area !== 'local') return;
-  void loadSettings().then((s) => applyEnabled(s.enabled));
+  void loadSettings().then((s) => {
+    applyEnabled(s.enabled);
+    applyModel(s.modelId);
+  });
 });
 
 async function init() {
   const settings = await loadSettings();
   enabled = settings.enabled;
+  modelId = settings.modelId;
 
   hud.mount();
   hud.setEnabled(enabled);
+  hud.setModel(modelSpec(modelId).name);
   overlays.mount();
 
   if (enabled) discovery.start();
 
-  console.log('[foodmask][content] initialized, enabled =', enabled);
+  console.log('[foodmask][content] initialized, enabled =', enabled, 'model =', modelId);
 }
 
 if (document.body) {

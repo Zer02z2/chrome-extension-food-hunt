@@ -1,25 +1,48 @@
-// Popup UI: global on/off + blur intensity, persisted to chrome.storage.local.
+// Popup UI: global on/off, blur intensity, and which food-categorization model
+// the offscreen document should use. All three persist to chrome.storage.local.
 // Content and offscreen contexts react via storage.onChanged; we also broadcast
-// SETTINGS_CHANGED so the offscreen blur updates immediately.
+// SETTINGS_CHANGED so the switch takes effect immediately.
 
 import { loadSettings, saveSettings } from '../shared/config';
+import { MODEL_IDS, MODELS, isModelId, type ModelId } from '../shared/models';
 import type { SettingsChanged } from '../shared/messages';
 
 const enabledEl = document.getElementById('enabled') as HTMLInputElement;
 const blurEl = document.getElementById('blur') as HTMLInputElement;
 const blurVal = document.getElementById('blurVal') as HTMLSpanElement;
+const modelEl = document.getElementById('model') as HTMLSelectElement;
+const modelHint = document.getElementById('modelHint') as HTMLParagraphElement;
+
+// Build the picker from the catalog — adding a model needs no popup edit.
+for (const id of MODEL_IDS) {
+  const opt = document.createElement('option');
+  opt.value = id;
+  opt.textContent = MODELS[id].name;
+  modelEl.append(opt);
+}
+
+function selectedModel(): ModelId {
+  return isModelId(modelEl.value) ? modelEl.value : MODEL_IDS[0];
+}
+
+function showHint() {
+  modelHint.textContent = MODELS[selectedModel()].summary;
+}
 
 async function boot() {
   const s = await loadSettings();
   enabledEl.checked = s.enabled;
   blurEl.value = String(s.blurPx);
   blurVal.textContent = String(s.blurPx);
+  modelEl.value = s.modelId;
+  showHint();
 }
 
 async function persist() {
   const next = {
     enabled: enabledEl.checked,
     blurPx: Number(blurEl.value),
+    modelId: selectedModel(),
   };
   await saveSettings(next);
   const broadcast: SettingsChanged = { type: 'SETTINGS_CHANGED', ...next };
@@ -31,5 +54,9 @@ blurEl.addEventListener('input', () => {
   blurVal.textContent = blurEl.value;
 });
 blurEl.addEventListener('change', () => void persist());
+modelEl.addEventListener('change', () => {
+  showHint();
+  void persist();
+});
 
 void boot();

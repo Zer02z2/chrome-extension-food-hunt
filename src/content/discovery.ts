@@ -57,6 +57,17 @@ export class ImageDiscovery {
     this.started = false;
   }
 
+  // Forget every verdict already reached on this page and consider all images
+  // again. Used when the active model changes: the previous model's answers are
+  // no longer the ones the user asked for.
+  rescan() {
+    this.processed.clear();
+    document.querySelectorAll<HTMLImageElement>('img[data-foodmask-id]').forEach((el) => {
+      delete el.dataset[ID_ATTR];
+    });
+    if (this.started) this.scanExisting(document.documentElement);
+  }
+
   private scanExisting(root: ParentNode) {
     root.querySelectorAll('img').forEach((img) => this.arm(img));
   }

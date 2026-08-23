@@ -25,10 +25,21 @@ export type LoadedSession = {
 
 // Prefer WebGPU; fall back to WASM. ORT does not always fall back on its own, so
 // we try each provider explicitly and report which one actually initialized.
-export async function createSession(modelPath: string): Promise<LoadedSession> {
+export async function createSession(
+  modelPath: string,
+  modelName = modelPath,
+): Promise<LoadedSession> {
   configureOrt();
   const url = chrome.runtime.getURL(modelPath);
-  const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  const res = await fetch(url);
+  if (!res.ok) {
+    // Weights are fetched, never committed, so a missing file is the single most
+    // likely first-run failure. Say so instead of surfacing a bare 404.
+    throw new Error(
+      `${modelName} weights missing (${modelPath}) — run \`npm run fetch:models\` and rebuild`,
+    );
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
 
   const webgpuAvailable = typeof navigator !== 'undefined' && 'gpu' in navigator;
   if (webgpuAvailable) {

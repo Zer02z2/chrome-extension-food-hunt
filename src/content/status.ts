@@ -46,6 +46,11 @@ const CSS = `
 .stat { display: flex; justify-content: space-between; }
 .stat b { font-variant-numeric: tabular-nums; }
 .k { opacity: 0.65; }
+.model {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11px; opacity: 0.7; margin-top: 2px;
+}
+.model b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log {
   margin-top: 4px; max-height: 76px; overflow: auto;
   font-size: 11px; line-height: 1.3; opacity: 0.8;
@@ -60,6 +65,7 @@ export class StatusHud {
   private wrap!: HTMLDivElement;
   private dot!: HTMLDivElement;
   private logEl!: HTMLDivElement;
+  private modelEl!: HTMLElement;
   private statEls: Record<keyof HudCounts, HTMLElement> = {} as never;
   private counts: HudCounts = { scanned: 0, food: 0, masked: 0, pending: 0 };
   private enabled = true;
@@ -122,12 +128,24 @@ export class StatusHud {
       mk('pending', 'pending'),
     );
 
+    const model = document.createElement('div');
+    model.className = 'model';
+    const modelK = document.createElement('span');
+    modelK.textContent = 'model';
+    this.modelEl = document.createElement('b');
+    this.modelEl.textContent = '—';
+    model.append(modelK, this.modelEl);
+
     this.logEl = document.createElement('div');
     this.logEl.className = 'log';
 
-    body.append(stats, this.logEl);
+    body.append(stats, model, this.logEl);
     this.wrap.append(head, body);
     this.root.append(style, this.wrap);
+  }
+
+  setModel(name: string) {
+    this.modelEl.textContent = name;
   }
 
   setEnabled(on: boolean) {

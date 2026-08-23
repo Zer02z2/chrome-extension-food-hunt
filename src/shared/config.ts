@@ -1,13 +1,18 @@
 // Central knobs. Kept tiny and dependency-free so any context can import it.
 
+import { DEFAULT_MODEL_ID, isModelId, type ModelId } from './models';
+
 export const DEFAULTS = {
   enabled: true,
   blurPx: 16,
+  modelId: DEFAULT_MODEL_ID,
 } as const;
 
 export type Settings = {
   enabled: boolean;
   blurPx: number;
+  /** Which food-categorization model the offscreen document should use. */
+  modelId: ModelId;
 };
 
 export const STORAGE_KEY = 'foodmask.settings';
@@ -18,6 +23,9 @@ export async function loadSettings(): Promise<Settings> {
   return {
     enabled: stored?.enabled ?? DEFAULTS.enabled,
     blurPx: stored?.blurPx ?? DEFAULTS.blurPx,
+    // Validate rather than trust: a stored id from an older build (or a removed
+    // model) must not wedge the pipeline on a model that no longer exists.
+    modelId: isModelId(stored?.modelId) ? stored.modelId : DEFAULTS.modelId,
   };
 }
 
@@ -31,28 +39,13 @@ export const DISCOVERY = {
   minHeight: 128,
 } as const;
 
-// Offscreen pipeline knobs.
+// Offscreen pipeline knobs. Model-specific tuning (score threshold, weights
+// path) lives per-model in shared/models.ts, not here.
 export const PIPELINE = {
   maxConcurrent: 2,
-  // Longest edge fed to the segmentation model input (YOLOv8-seg uses 640).
+  // Fallback square input size, used only when a model's ONNX metadata declares
+  // a dynamic/unknown input shape. Standard YOLOv8-seg exports declare 640.
   modelInputSize: 640,
-  // Confidence threshold for keeping a detection. Tuned for the FoodSeg103 model,
-  // which spreads confidence across 104 fine-grained classes and so scores lower
-  // than COCO (validated: 0.15 masks pizza/ramen/sushi while a bus stays clean —
-  // its background class suppresses non-food even at low thresholds). Raise toward
-  // 0.25 if using the COCO model or if you see false positives.
-  scoreThreshold: 0.15,
   // Mask binarization threshold (after sigmoid).
   maskThreshold: 0.5,
-} as const;
-
-// Which model file the offscreen document loads, and how to interpret its
-// classes. `npm run fetch:models` writes to MODEL.path.
-//   - kind 'auto'       : pick the gate from the class count (80 => COCO subset,
-//                         otherwise treat every class as food). Safe default.
-//   - kind 'coco'       : force the COCO food-class subset gate.
-//   - kind 'foodseg103' : force every detected class to count as food.
-export const MODEL = {
-  path: 'models/food-model.onnx',
-  kind: 'auto' as 'auto' | 'coco' | 'foodseg103',
 } as const;

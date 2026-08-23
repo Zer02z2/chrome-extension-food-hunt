@@ -10,7 +10,7 @@
         font: 13px/1.4 system-ui, sans-serif;
         margin: 0;
         padding: 14px 16px;
-        width: 240px;
+        width: 268px;
       }
       h1 { font-size: 14px; margin: 0 0 12px; display: flex; align-items: center; gap: 6px; }
       .row { display: flex; align-items: center; justify-content: space-between; margin: 10px 0; }
@@ -29,6 +29,17 @@
       }
       input:checked + .slider { background: #2e7d32; }
       input:checked + .slider::before { transform: translateX(18px); }
+
+      hr { border: 0; border-top: 1px solid; opacity: 0.15; margin: 14px 0 10px; }
+      .section { margin: 10px 0 0; }
+      .section > label { display: block; margin-bottom: 6px; }
+      select {
+        width: 100%;
+        font: inherit;
+        padding: 5px 6px;
+        border-radius: 6px;
+      }
+      .hint { margin: 6px 0 0; font-size: 11px; line-height: 1.35; opacity: 0.65; }
     </style>
   </head>
   <body>
@@ -45,6 +56,17 @@
       <input type="range" id="blur" min="4" max="40" step="2" />
       <span class="val" id="blurVal">16</span>
     </div>
+
+    <hr />
+
+    <div class="section">
+      <label for="model">Food detection model</label>
+      <!-- Options are rendered from shared/models.ts so the catalog stays the
+           single source of truth. -->
+      <select id="model"></select>
+      <p class="hint" id="modelHint"></p>
+    </div>
+
     <script type="module" src="/src/popup/main.ts"></script>
   </body>
 </html>

@@ -1,7 +1,8 @@
-// COCO-80 class names (YOLO order) and the subset we treat as "food".
-// The segmentation model's detection pass over these classes doubles as the
-// food gate. Swapping in a food-specialized model later means updating this map
-// and the FOOD_CLASS_IDS set only.
+// COCO-80 class policy: the stock YOLOv8n-seg model's classes, of which ten are
+// food. Narrow coverage but high precision on what it does know — the detection
+// pass over those ten classes IS the food gate.
+
+import type { ClassPolicy } from './yolo-seg';
 
 export const COCO_CLASSES = [
   'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
@@ -24,3 +25,8 @@ export const FOOD_CLASS_IDS = new Set<number>([46, 47, 48, 49, 50, 51, 52, 53, 5
 export function isFoodClass(classId: number): boolean {
   return FOOD_CLASS_IDS.has(classId);
 }
+
+export const COCO_POLICY: ClassPolicy = {
+  isFood: isFoodClass,
+  label: (id) => COCO_CLASSES[id] ?? `#${id}`,
+};
