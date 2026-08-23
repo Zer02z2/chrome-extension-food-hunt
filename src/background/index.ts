@@ -6,9 +6,11 @@ import {
   isMaskRequest,
   isMaskResult,
   isCancelJob,
+  isSettingsRequest,
   type MaskResult,
   type OffscreenJob,
 } from '../shared/messages';
+import { DEFAULTS, loadSettings } from '../shared/config';
 
 console.log('[foodmask][sw] booted');
 
@@ -57,7 +59,20 @@ async function ensureOffscreen(): Promise<void> {
   await creating;
 }
 
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // The offscreen document has no chrome.storage, so it asks us for settings on
+  // boot. Returning true keeps the message channel open for the async reply —
+  // and ONLY this branch may do so.
+  if (isSettingsRequest(msg)) {
+    loadSettings()
+      .then(sendResponse)
+      .catch((err) => {
+        console.warn('[foodmask][sw] settings read failed, sending defaults', err);
+        sendResponse({ ...DEFAULTS });
+      });
+    return true;
+  }
+
   // From a content script: sender.tab is set. Route into the offscreen worker.
   if (isMaskRequest(msg) && sender.tab?.id != null) {
     const tabId = sender.tab.id;

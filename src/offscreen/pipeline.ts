@@ -13,7 +13,7 @@ import { getClassifier } from './classifiers';
 import type { FoodClassifier } from './classifiers/types';
 import { buildFoodMaskCanvas, wholeImageMaskCanvas } from './mask';
 import { compositeOverlay } from './composite';
-import { DEFAULTS, loadSettings, PIPELINE, type Settings } from '../shared/config';
+import { DEFAULTS, PIPELINE, type Settings } from '../shared/config';
 import { modelSpec, type ModelId } from '../shared/models';
 import type { MaskResult, OffscreenJob } from '../shared/messages';
 
@@ -39,8 +39,10 @@ export class Pipeline {
     return getClassifier(this.settings.modelId).provider;
   }
 
-  async init() {
-    this.settings = await loadSettings();
+  // Settings are passed in, never read here: this class runs in the offscreen
+  // document, which has no chrome.storage. See offscreen/index.ts.
+  async init(settings: Settings) {
+    this.settings = settings;
     await this.warm(this.settings.modelId);
   }
 

@@ -52,12 +52,22 @@ export type CancelJob = {
   imgId: string;
 };
 
+// Offscreen -> SW, on boot. Offscreen documents are limited to chrome.runtime
+// and the messaging APIs — chrome.storage is NOT defined there — so the
+// offscreen document cannot read its own settings and asks the service worker
+// (which has the full API surface) to read them on its behalf.
+// The SW replies with a Settings object.
+export type SettingsRequest = {
+  type: 'SETTINGS_REQUEST';
+};
+
 export type AnyMessage =
   | MaskRequest
   | MaskResult
   | SettingsChanged
   | OffscreenJob
-  | CancelJob;
+  | CancelJob
+  | SettingsRequest;
 
 export function isOffscreenJob(m: unknown): m is OffscreenJob {
   return !!m && typeof m === 'object' && (m as AnyMessage).type === 'OFFSCREEN_JOB';
@@ -77,4 +87,8 @@ export function isSettingsChanged(m: unknown): m is SettingsChanged {
 
 export function isCancelJob(m: unknown): m is CancelJob {
   return !!m && typeof m === 'object' && (m as AnyMessage).type === 'CANCEL_JOB';
+}
+
+export function isSettingsRequest(m: unknown): m is SettingsRequest {
+  return !!m && typeof m === 'object' && (m as AnyMessage).type === 'SETTINGS_REQUEST';
 }

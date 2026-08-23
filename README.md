@@ -80,6 +80,13 @@ content: Map.get(imgId) → position overlay <img> over the element
 - **Only one offscreen document exists.** Creation is guarded with
   `chrome.runtime.getContexts` and serialized behind a single promise to survive
   the concurrent-create race.
+- **The offscreen document has no `chrome.storage`.** Offscreen documents are
+  limited to `chrome.runtime` and the messaging APIs; other namespaces are
+  `undefined` there *even though the manifest requests the permission*. So the
+  offscreen document never reads settings itself — it asks the service worker
+  for them on boot (`SETTINGS_REQUEST`) and then receives the popup's
+  `SETTINGS_CHANGED` broadcasts directly. Anything else needing an extension API
+  from that context must be brokered the same way.
 - **Images are fetched inside the offscreen document**, so extension
   `host_permissions` grant cross-origin bytes and the `ImageBitmap` is not tainted.
 - **Images are tracked by stamped ID**, never DOM index.
