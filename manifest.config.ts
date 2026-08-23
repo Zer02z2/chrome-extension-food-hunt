@@ -6,7 +6,7 @@ export default defineManifest({
   name: 'Food Mask',
   description: 'Finds food images on any webpage and masks the food — 100% on-device.',
   version: pkg.version,
-  permissions: ['offscreen', 'storage', 'scripting'],
+  permissions: ['offscreen', 'storage'],
   host_permissions: ['<all_urls>'],
   background: {
     service_worker: 'src/background/index.ts',

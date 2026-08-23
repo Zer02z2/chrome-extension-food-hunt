@@ -45,13 +45,14 @@ content script hot-reloads on save).
 
 ## How it works
 
-Four contexts, each with one job:
+Five contexts, each with one job:
 
 | Context | Job |
 |---|---|
 | **Content script** (`src/content`) | Find images, stamp IDs, request masking, render the returned overlay, show the status HUD |
-| **Service worker** (`src/background`) | Router only: guarantee the offscreen doc exists, correlate requests, route messages |
-| **Offscreen document** (`src/offscreen`) | All compute: fetch image → classify → segment → composite the overlay |
+| **Service worker** (`src/background`) | Router only: guarantee the offscreen doc exists, stamp settings onto jobs, correlate requests |
+| **Offscreen document** (`src/offscreen/index.ts`) | A relay. Owns the compute worker and forwards messages to it — nothing else |
+| **Compute worker** (`src/offscreen/worker.ts`) | All compute: fetch image → model → mask → overlay |
 | **Popup** (`src/popup`) | On/off toggle, blur intensity, **which detection model to use** |
 
 Flow for one image:
@@ -61,9 +62,10 @@ content: IntersectionObserver sees a visible <img>
   → stamp data-foodmask-id, store in Map<id, element>
   → sendMessage(MASK_REQUEST)
 service worker: reads sender.tab.id, stores requestId→tabId
-  → ensureOffscreen(), forward as OFFSCREEN_JOB
-offscreen: fetch(url) → ImageBitmap (host_permissions dodge CORS taint)
-  → classifier.classify(bitmap) → { isFood, labels, segmentation? }   ← pluggable
+  → ensureOffscreen(), forward as OFFSCREEN_JOB + { modelId, blurPx }
+offscreen document: postMessage straight through to the worker
+worker: fetch(url) → ImageBitmap (host_permissions dodge CORS taint)
+  → runModel(spec, bitmap) → { isFood, labels, detections, protos }   ← pluggable
   → not food? reply and stop
   → food? build mask → composite blurred overlay
   → reply MASK_RESULT { isFood, overlayPngDataUrl? }
@@ -80,14 +82,19 @@ content: Map.get(imgId) → position overlay <img> over the element
 - **Only one offscreen document exists.** Creation is guarded with
   `chrome.runtime.getContexts` and serialized behind a single promise to survive
   the concurrent-create race.
-- **The offscreen document has no `chrome.storage`.** Offscreen documents are
-  limited to `chrome.runtime` and the messaging APIs; other namespaces are
-  `undefined` there *even though the manifest requests the permission*. So the
-  offscreen document never reads settings itself — it asks the service worker
-  for them on boot (`SETTINGS_REQUEST`) and then receives the popup's
-  `SETTINGS_CHANGED` broadcasts directly. Anything else needing an extension API
-  from that context must be brokered the same way.
-- **Images are fetched inside the offscreen document**, so extension
+- **Inference never runs on a main thread.** ORT's wasm backend runs
+  synchronously on whichever thread calls it, and every extension page shares one
+  renderer process — so calling it from the offscreen document froze the whole
+  extension for ~0.7 s per image and the popup could not even open. All compute
+  therefore lives in a dedicated `Worker`; the offscreen document exists only to
+  own it, because a service worker cannot.
+- **The worker has no `chrome.*` APIs.** It is handed the packaged URLs it needs
+  (ORT wasm, model weights) in a single `WORKER_INIT` message, and every job
+  arrives carrying the settings it should run under, so there is no settings
+  state in the worker to drift.
+- **Jobs run one at a time.** Inference is CPU-bound and single-threaded;
+  overlapping two only makes both slower and delays every result.
+- **Images are fetched inside the worker**, so extension
   `host_permissions` grant cross-origin bytes and the `ImageBitmap` is not tainted.
 - **Images are tracked by stamped ID**, never DOM index.
 - **Overlays cross `sendMessage` as PNG data URLs** (transferables/`ImageBitmap`
@@ -146,17 +153,10 @@ src/
   content/                discovery, overlay renderer, status HUD, orchestrator
   background/             service-worker router + offscreen lifecycle
   offscreen/
-    classifiers/          ← the pluggable seam: one impl per model
-      types.ts              FoodClassifier contract (image -> is-it-food)
-      yolo-seg.ts           shared YOLOv8-seg engine (forward, decode, NMS)
-      coco.ts               COCO-80 labels + 10-food policy
-      foodseg103.ts         FoodSeg103 labels + all-but-background policy
-      index.ts              ModelId -> warm classifier registry
-    runtime.ts            ORT bootstrap (WebGPU -> WASM)
-    preprocess.ts         letterbox + NCHW tensor
-    mask.ts               verdict -> binary mask at original resolution
-    composite.ts          mask + blur -> PNG overlay
-    pipeline.ts           model-agnostic orchestration
+    index.ts              relay: chrome.runtime <-> the worker (~30 lines)
+    worker.ts             the pipeline: queue, cache, fetch, orchestration
+    model.ts              ORT bootstrap + the shared YOLOv8-seg runner
+    mask.ts               verdict + image -> blurred PNG overlay
   popup/                  on/off, blur, and model picker
 public/
   ort/                    ORT runtime (git-ignored, copied from node_modules)
@@ -167,28 +167,34 @@ public/
 
 ## Adding or swapping a model
 
-The pipeline asks a classifier exactly one question — **is this image food?** —
-and everything downstream (masking, compositing, caching, messaging, the HUD) is
-shared. That one call is the only model-specific line in `pipeline.ts`:
+The pipeline asks exactly one question — **is this image food?** — and
+everything downstream (masking, compositing, caching, messaging, the HUD) is
+shared. Adding a model must not add a branch anywhere.
+
+Everything that differs between models is **data**, in one table:
 
 ```ts
-// src/offscreen/classifiers/types.ts
-export interface FoodClassifier {
-  load(): Promise<void>;
-  classify(bitmap: ImageBitmap): Promise<FoodVerdict>;  // { isFood, labels, segmentation? }
-}
+// src/shared/models.ts
+export type ModelSpec = {
+  id: ModelId;
+  name: string;
+  summary: string;
+  file: string;                            // weights under public/
+  scoreThreshold: number;
+  isFood: (classId: number) => boolean;    // the gate
+  label: (classId: number) => string;      // cosmetic
+};
 ```
 
-`segmentation` is an optional by-product, not part of the contract. Both shipped
-models are YOLOv8-seg and produce instance masks in the *same* forward pass that
-yields the verdict, so discarding them and re-running a segmenter would double
-the cost for nothing. A pure classifier (say a MobileNet food/not-food head)
-simply omits it and the pipeline blurs the whole image instead — the only honest
-reading of a bare boolean.
+`src/offscreen/model.ts` reads that spec and contains no per-model branches. It
+returns a `Verdict` — `{ isFood, labels, detections, protos, letterbox }` —
+where `isFood` is the whole contract and the rest is detail for drawing the mask.
+A model that cannot localize its answer leaves `protos` null and the overlay step
+blurs the whole image: the only honest reading of a bare boolean.
 
-> The classifier takes an `ImageBitmap`, not a URL. Fetching happens once in
-> `pipeline.ts` so that cross-origin handling, the concurrency gate, the result
-> cache, and cancellation are implemented once rather than per model.
+> The runner takes an `ImageBitmap`, not a URL. Fetching happens once in
+> `worker.ts` so cross-origin handling, the job queue, the result cache and
+> cancellation are implemented once rather than per model.
 
 **Another YOLOv8-seg export** — no new code:
 
@@ -196,16 +202,14 @@ reading of a bare boolean.
    (or export your own: `yolo export model=your-seg.pt format=onnx imgsz=640 opset=12`).
 2. Adjust that entry's `scoreThreshold` in `src/shared/models.ts` if needed.
 
-If your export's class order differs from the tables in
-`src/offscreen/classifiers/`, HUD labels may be off — cosmetic only, masking is
-unaffected.
+Input size is read from the ONNX graph, so 640 and 768 exports both just work.
+If your export's class order differs from the tables in `src/shared/models.ts`,
+HUD labels may be off — cosmetic only, masking is unaffected.
 
-**A genuinely different model** — three small steps, none of them in the pipeline:
-
-1. Add an entry to `MODELS` in `src/shared/models.ts` (the popup picker builds
-   itself from this catalog).
-2. Implement `FoodClassifier` in `src/offscreen/classifiers/`.
-3. Register the factory in `src/offscreen/classifiers/index.ts`.
+**A genuinely different architecture** — add the entry to `MODELS` as above, then
+give it a runner alongside `runModel` returning the same `Verdict`. Everything
+downstream is already shared and the popup picker builds itself from the
+catalog.
 
 ---
 
@@ -220,6 +224,8 @@ unaffected.
   is logged from the offscreen document (`provider=webgpu|wasm`).
 - **In-flight inference isn't abortable.** Cancellation drops still-queued jobs;
   a job already running finishes, but its result is discarded by the page.
+- **Reloading the extension needs a page refresh.** Tabs open at reload time keep
+  an orphaned content script until they reload - standard for MV3.
 - **Both models stay resident once used.** Switching in the popup loads the new
   weights lazily and keeps the previous session warm (~30 MB for both) so that
   flipping back is instant. Restart the browser to release them.

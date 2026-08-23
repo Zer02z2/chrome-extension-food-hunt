@@ -1,11 +1,10 @@
 // Popup UI: global on/off, blur intensity, and which food-categorization model
-// the offscreen document should use. All three persist to chrome.storage.local.
-// Content and offscreen contexts react via storage.onChanged; we also broadcast
-// SETTINGS_CHANGED so the switch takes effect immediately.
+// to use. All three persist to chrome.storage.local, which is the single source
+// of truth: content scripts react via storage.onChanged, and the service worker
+// re-reads and stamps the current settings onto every job it dispatches.
 
 import { loadSettings, saveSettings } from '../shared/config';
 import { MODEL_IDS, MODELS, isModelId, type ModelId } from '../shared/models';
-import type { SettingsChanged } from '../shared/messages';
 
 const enabledEl = document.getElementById('enabled') as HTMLInputElement;
 const blurEl = document.getElementById('blur') as HTMLInputElement;
@@ -45,8 +44,6 @@ async function persist() {
     modelId: selectedModel(),
   };
   await saveSettings(next);
-  const broadcast: SettingsChanged = { type: 'SETTINGS_CHANGED', ...next };
-  chrome.runtime.sendMessage(broadcast).catch(() => {});
 }
 
 enabledEl.addEventListener('change', () => void persist());

@@ -12,8 +12,6 @@ export type DiscoveredImage = {
   el: HTMLImageElement;
   imgId: string;
   imageUrl: string;
-  naturalWidth: number;
-  naturalHeight: number;
 };
 
 export type DiscoveryCallbacks = {
@@ -141,12 +139,6 @@ export class ImageDiscovery {
     this.processed.add(imgId);
     this.io.unobserve(el);
 
-    this.cb.onDiscovered({
-      el,
-      imgId,
-      imageUrl: url,
-      naturalWidth: el.naturalWidth,
-      naturalHeight: el.naturalHeight,
-    });
+    this.cb.onDiscovered({ el, imgId, imageUrl: url });
   }
 }

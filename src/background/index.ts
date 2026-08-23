@@ -1,23 +1,30 @@
 // Service worker — pure router. Holds no models and does no compute.
-// It may die after ~30s idle and be respawned; all state here is best-effort and
-// re-derivable. The offscreen document is the persistent compute context.
+// It may die after ~30 s idle and be respawned, so all state here is
+// best-effort and re-derivable. The offscreen document is the persistent
+// compute context.
 
 import {
+  isCancelJob,
   isMaskRequest,
   isMaskResult,
-  isCancelJob,
-  isSettingsRequest,
   type MaskResult,
   type OffscreenJob,
 } from '../shared/messages';
-import { DEFAULTS, loadSettings } from '../shared/config';
+import { loadSettings, type Settings } from '../shared/config';
 
 console.log('[foodmask][sw] booted');
 
 const OFFSCREEN_URL = 'offscreen.html';
 
 // requestId -> which tab to deliver the result back to.
-const pending = new Map<string, { tabId: number }>();
+const pending = new Map<string, number>();
+
+// The worker holds no settings of its own; every job carries the ones it should
+// run under. This is the only place that reads them, so one cached copy does.
+let settings: Promise<Settings> | null = null;
+chrome.storage.onChanged.addListener((_changes, area) => {
+  if (area === 'local') settings = null;
+});
 
 // Serialize offscreen creation so two concurrent requests can't both try to
 // create the document (which would throw "Only a single offscreen document...").
@@ -34,21 +41,17 @@ async function hasOffscreen(): Promise<boolean> {
 
 async function ensureOffscreen(): Promise<void> {
   if (await hasOffscreen()) return;
-  if (creating) {
-    await creating;
-    return;
-  }
+  if (creating) return creating;
+
   creating = chrome.offscreen
     .createDocument({
       url: OFFSCREEN_URL,
       // WORKERS keeps the doc alive with no fixed lifetime; never AUDIO_PLAYBACK
-      // (that self-closes after ~30s of no audio).
+      // (that self-closes after ~30 s of no audio).
       reasons: [chrome.offscreen.Reason.WORKERS],
       justification: 'Runs on-device food classification and segmentation models.',
     })
-    .then(() => {
-      console.log('[foodmask][sw] offscreen document created');
-    })
+    .then(() => console.log('[foodmask][sw] offscreen document created'))
     .catch((err) => {
       // A racing create may have won; tolerate the "already exists" error.
       if (!String(err?.message ?? err).includes('single offscreen')) throw err;
@@ -56,61 +59,45 @@ async function ensureOffscreen(): Promise<void> {
     .finally(() => {
       creating = null;
     });
-  await creating;
+  return creating;
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // The offscreen document has no chrome.storage, so it asks us for settings on
-  // boot. Returning true keeps the message channel open for the async reply —
-  // and ONLY this branch may do so.
-  if (isSettingsRequest(msg)) {
-    loadSettings()
-      .then(sendResponse)
-      .catch((err) => {
-        console.warn('[foodmask][sw] settings read failed, sending defaults', err);
-        sendResponse({ ...DEFAULTS });
-      });
-    return true;
-  }
-
+chrome.runtime.onMessage.addListener((msg, sender) => {
   // From a content script: sender.tab is set. Route into the offscreen worker.
   if (isMaskRequest(msg) && sender.tab?.id != null) {
-    const tabId = sender.tab.id;
-    pending.set(msg.requestId, { tabId });
+    pending.set(msg.requestId, sender.tab.id);
 
     void (async () => {
       try {
-        await ensureOffscreen();
+        const [current] = await Promise.all([(settings ??= loadSettings()), ensureOffscreen()]);
         const job: OffscreenJob = {
           type: 'OFFSCREEN_JOB',
           requestId: msg.requestId,
           imgId: msg.imgId,
           imageUrl: msg.imageUrl,
-          naturalWidth: msg.naturalWidth,
-          naturalHeight: msg.naturalHeight,
+          modelId: current.modelId,
+          blurPx: current.blurPx,
         };
         await chrome.runtime.sendMessage(job);
       } catch (err) {
         console.warn('[foodmask][sw] failed to dispatch job', err);
         // Report a benign failure back to the tab so the HUD can settle.
-        const failure: MaskResult = {
+        routeResult({
           type: 'MASK_RESULT',
           requestId: msg.requestId,
           imgId: msg.imgId,
           isFood: false,
           error: String((err as Error)?.message ?? err),
-        };
-        routeResult(failure);
+        });
       }
     })();
-    return; // no synchronous response
+    return;
   }
 
-  // Cancellation from a content script: forget the mapping and tell the offscreen
-  // worker to drop the job if it hasn't started.
+  // Cancellation from a content script: forget the mapping and tell the worker
+  // to drop the job if it hasn't started.
   if (isCancelJob(msg)) {
     pending.delete(msg.requestId);
-    // Only forward if the offscreen doc exists; if it doesn't, there's no job.
     void hasOffscreen().then((exists) => {
       if (exists) chrome.runtime.sendMessage(msg).catch(() => {});
     });
@@ -118,61 +105,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   // From the offscreen document: deliver the result to the originating tab.
-  if (isMaskResult(msg)) {
-    routeResult(msg);
-    return;
-  }
+  if (isMaskResult(msg)) routeResult(msg);
 });
 
 function routeResult(result: MaskResult) {
-  const target = pending.get(result.requestId);
+  const tabId = pending.get(result.requestId);
   pending.delete(result.requestId);
-  if (!target) {
-    // Tab may have navigated away, or the SW restarted and lost the mapping.
-    return;
-  }
-  chrome.tabs.sendMessage(target.tabId, result).catch((err) => {
-    // Tab closed / no content script (e.g. chrome:// page). Safe to ignore.
+  // Tab may have navigated away, or the SW restarted and lost the mapping.
+  if (tabId == null) return;
+
+  chrome.tabs.sendMessage(tabId, result).catch((err) => {
+    // Tab closed / no content script (e.g. a chrome:// page). Safe to ignore.
     console.debug('[foodmask][sw] deliver to tab failed', err?.message ?? err);
   });
 }
-
-// Content scripts declared in the manifest are injected only into pages loaded
-// AFTER an install/update. Every tab that was already open keeps an orphaned
-// script from the previous build (its chrome.* namespaces torn down) or none at
-// all, so the HUD never appears and popup toggles reach nobody — until the user
-// manually refreshes each tab.
-//
-// Re-inject explicitly so a reload just works. This is what the manifest's
-// long-declared but previously unused "scripting" permission is for.
-async function injectIntoOpenTabs(): Promise<void> {
-  const scripts = chrome.runtime.getManifest().content_scripts ?? [];
-
-  for (const cs of scripts) {
-    const files = cs.js ?? [];
-    if (files.length === 0 || !cs.matches) continue;
-
-    // tabs.query can filter by url thanks to our <all_urls> host permissions,
-    // so no extra "tabs" permission is needed.
-    const tabs = await chrome.tabs.query({ url: cs.matches });
-    for (const tab of tabs) {
-      if (tab.id == null) continue;
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id, allFrames: cs.all_frames ?? false },
-          files,
-          injectImmediately: true,
-        });
-      } catch (err) {
-        // Restricted pages (chrome://, the Web Store, PDF viewers, file:// without
-        // access) reject injection. Expected and harmless — skip them quietly.
-        console.debug('[foodmask][sw] skip tab', tab.id, (err as Error)?.message ?? err);
-      }
-    }
-  }
-}
-
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('[foodmask][sw] onInstalled');
-  void injectIntoOpenTabs();
-});

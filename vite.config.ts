@@ -11,7 +11,7 @@ function dropBundledOrtWasm(): Plugin {
     name: 'drop-bundled-ort-wasm',
     generateBundle(_options, bundle) {
       for (const file of Object.keys(bundle)) {
-        if (file.endsWith('.wasm')) delete bundle[file];
+        if (/ort-.*\.wasm$/.test(file)) delete bundle[file];
       }
     },
   };
@@ -19,6 +19,9 @@ function dropBundledOrtWasm(): Plugin {
 
 export default defineConfig({
   plugins: [crx({ manifest }), dropBundledOrtWasm()],
+  // The pipeline runs in a module Worker; the default 'iife' worker format
+  // cannot express one.
+  worker: { format: 'es' },
   build: {
     target: 'esnext',
     rollupOptions: {

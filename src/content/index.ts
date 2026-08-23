@@ -5,23 +5,11 @@
 import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
 import { OverlayManager } from './overlay';
-import { loadSettings, storageUnavailableReason, watchSettings } from '../shared/config';
-import { DEFAULT_MODEL_ID, modelSpec, type ModelId } from '../shared/models';
+import { loadSettings, watchSettings } from '../shared/config';
+import { DEFAULT_MODEL_ID, MODELS, type ModelId } from '../shared/models';
 import { isMaskResult, type MaskRequest, type CancelJob } from '../shared/messages';
 
 console.log('[foodmask][content] loaded on', location.href);
-
-// The service worker re-injects this script into already-open tabs after an
-// install/update, which can land on a tab that already has a live copy. Detect
-// that and stay inert rather than mounting a second HUD and double-queueing
-// every image.
-declare global {
-  interface Window {
-    __foodmaskContentActive?: boolean;
-  }
-}
-const alreadyActive = window.__foodmaskContentActive === true;
-window.__foodmaskContentActive = true;
 
 const registry = new Map<string, HTMLImageElement>();
 const requestByImg = new Map<string, string>(); // imgId -> requestId (in-flight)
@@ -68,8 +56,6 @@ function queueImage(img: DiscoveredImage) {
     requestId,
     imgId: img.imgId,
     imageUrl: img.imageUrl,
-    naturalWidth: img.naturalWidth,
-    naturalHeight: img.naturalHeight,
   };
 
   hud.update({ scanned: hud.snapshot.scanned + 1, pending: hud.snapshot.pending + 1 });
@@ -77,8 +63,22 @@ function queueImage(img: DiscoveredImage) {
   hud.log(`scan ${shorten(img.imageUrl)}`);
 
   chrome.runtime.sendMessage(msg).catch((err) => {
+    // The service worker was not reachable, so no MASK_RESULT is ever coming.
+    // Settle the entry here or the image counts as pending for good.
     console.warn('[foodmask][content] sendMessage failed', err);
+    if (requestByImg.get(img.imgId) !== requestId) return; // already superseded
+    requestByImg.delete(img.imgId);
+    inflightIO.unobserve(img.el);
+    settlePending();
+    hud.log(`err ${img.imgId.slice(0, 6)} — not delivered`);
   });
+}
+
+// One image stopped being in flight, for whatever reason.
+function settlePending() {
+  const pending = Math.max(0, hud.snapshot.pending - 1);
+  hud.update({ pending });
+  if (pending === 0) hud.setBusy(false);
 }
 
 function cancelImage(imgId: string, el?: HTMLImageElement) {
@@ -88,8 +88,7 @@ function cancelImage(imgId: string, el?: HTMLImageElement) {
   const target = el ?? registry.get(imgId);
   if (target) inflightIO.unobserve(target);
 
-  hud.update({ pending: Math.max(0, hud.snapshot.pending - 1) });
-  if (hud.snapshot.pending === 0) hud.setBusy(false);
+  settlePending();
 
   const msg: CancelJob = { type: 'CANCEL_JOB', requestId, imgId };
   chrome.runtime.sendMessage(msg).catch(() => {});
@@ -113,11 +112,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   const target = registry.get(msg.imgId);
   if (target) inflightIO.unobserve(target);
 
-  if (wasInflight) {
-    const pendingCount = Math.max(0, hud.snapshot.pending - 1);
-    hud.update({ pending: pendingCount });
-    if (pendingCount === 0) hud.setBusy(false);
-  }
+  if (wasInflight) settlePending();
 
   if (!target) return; // element retired
   if (msg.error) {
@@ -157,8 +152,8 @@ function applyEnabled(next: boolean) {
 function applyModel(next: ModelId) {
   if (next === modelId) return;
   modelId = next;
-  hud.setModel(modelSpec(modelId).name);
-  hud.log(`model → ${modelSpec(modelId).name}`);
+  hud.setModel(MODELS[modelId].name);
+  hud.log(`model → ${MODELS[modelId].name}`);
 
   overlays.clear();
   for (const imgId of [...requestByImg.keys()]) cancelImage(imgId);
@@ -170,27 +165,20 @@ function applyModel(next: ModelId) {
 
 // React to popup changes (written to chrome.storage.local). Registered through
 // watchSettings so a dead extension context can't throw here — this runs at
-// module scope, ahead of init(), and a throw would take the whole content
-// script down with it.
+// module scope, ahead of init(), and a throw would take the script down with it.
 watchSettings((s) => {
-  if (alreadyActive) return; // a live copy owns this tab
   applyEnabled(s.enabled);
   applyModel(s.modelId);
 });
 
 async function init() {
-  const storageProblem = storageUnavailableReason();
-  if (storageProblem) {
-    console.warn(`[foodmask][content] ${storageProblem} — running with default settings`);
-  }
-
   const settings = await loadSettings();
   enabled = settings.enabled;
   modelId = settings.modelId;
 
   hud.mount();
   hud.setEnabled(enabled);
-  hud.setModel(modelSpec(modelId).name);
+  hud.setModel(MODELS[modelId].name);
   overlays.mount();
 
   if (enabled) discovery.start();
@@ -198,9 +186,7 @@ async function init() {
   console.log('[foodmask][content] initialized, enabled =', enabled, 'model =', modelId);
 }
 
-if (alreadyActive) {
-  console.debug('[foodmask][content] already active in this tab; ignoring duplicate injection');
-} else if (document.body) {
+if (document.body) {
   void init();
 } else {
   document.addEventListener('DOMContentLoaded', () => void init(), { once: true });
