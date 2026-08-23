@@ -17,8 +17,41 @@ export type Settings = {
 
 export const STORAGE_KEY = 'foodmask.settings';
 
+// chrome.storage can be missing even though the manifest requests it. The usual
+// cause is an INVALIDATED EXTENSION CONTEXT: a rebuild or "Reload" leaves this
+// document orphaned from the previous extension instance, Chrome tears down its
+// chrome.* namespaces, and every API read becomes undefined while the page keeps
+// running (and keeps logging under the same prefix).
+//
+// Settings are a convenience — every context has a sane default — so this must
+// degrade, never throw. Reading chrome.* in a dead context can itself throw, so
+// even the probe is guarded.
+function storageArea(): chrome.storage.StorageArea | null {
+  try {
+    return chrome.storage?.local ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Human-readable explanation, or null when storage is fine. For logging. */
+export function storageUnavailableReason(): string | null {
+  if (storageArea()) return null;
+  try {
+    if (!chrome?.runtime?.id) {
+      return 'extension context invalidated — this page is left over from a previous build; close it and reload the extension';
+    }
+  } catch {
+    return 'extension context invalidated — this page is left over from a previous build; close it and reload the extension';
+  }
+  return 'chrome.storage is unavailable — is the "storage" permission present in the loaded manifest?';
+}
+
 export async function loadSettings(): Promise<Settings> {
-  const raw = await chrome.storage.local.get(STORAGE_KEY);
+  const area = storageArea();
+  if (!area) return { ...DEFAULTS };
+
+  const raw = await area.get(STORAGE_KEY);
   const stored = raw[STORAGE_KEY] as Partial<Settings> | undefined;
   return {
     enabled: stored?.enabled ?? DEFAULTS.enabled,
@@ -30,7 +63,30 @@ export async function loadSettings(): Promise<Settings> {
 }
 
 export async function saveSettings(next: Settings): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEY]: next });
+  const area = storageArea();
+  // The popup is the only writer and always runs in a live context. If it
+  // somehow doesn't, failing loudly beats silently discarding the user's choice.
+  if (!area) throw new Error(storageUnavailableReason() ?? 'chrome.storage unavailable');
+  await area.set({ [STORAGE_KEY]: next });
+}
+
+// Subscribe to settings written by the popup. A no-op (rather than a thrown
+// TypeError) when storage is unavailable — this is called at module scope in
+// both the content script and the offscreen document, so throwing here would
+// abort the rest of their initialization.
+export function watchSettings(onChange: (settings: Settings) => void): void {
+  let onChanged;
+  try {
+    onChanged = chrome.storage?.onChanged;
+  } catch {
+    return;
+  }
+  if (!onChanged) return;
+
+  onChanged.addListener((_changes, area) => {
+    if (area !== 'local') return;
+    void loadSettings().then(onChange);
+  });
 }
 
 // Content-script image discovery thresholds.

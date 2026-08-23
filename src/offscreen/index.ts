@@ -3,10 +3,17 @@
 
 import { Pipeline } from './pipeline';
 import { isOffscreenJob, isSettingsChanged, isCancelJob } from './../shared/messages';
-import { loadSettings } from '../shared/config';
+import { storageUnavailableReason, watchSettings } from '../shared/config';
 import { modelSpec } from '../shared/models';
 
 console.log('[foodmask][offscreen] loaded');
+
+// Surface a dead/incomplete extension context once, by name, instead of letting
+// it resurface as an anonymous "Cannot read properties of undefined".
+const storageProblem = storageUnavailableReason();
+if (storageProblem) {
+  console.warn(`[foodmask][offscreen] ${storageProblem} — running with default settings`);
+}
 
 const pipeline = new Pipeline();
 const initDone = pipeline
@@ -47,7 +54,4 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 // Pick up settings changes that happen while we're alive even if the broadcast
 // is missed (e.g. set before this doc existed).
-chrome.storage.onChanged.addListener(async (_changes, area) => {
-  if (area !== 'local') return;
-  pipeline.updateSettings(await loadSettings());
-});
+watchSettings((settings) => pipeline.updateSettings(settings));

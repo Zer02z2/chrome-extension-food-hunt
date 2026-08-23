@@ -5,7 +5,7 @@
 import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
 import { OverlayManager } from './overlay';
-import { loadSettings } from '../shared/config';
+import { loadSettings, storageUnavailableReason, watchSettings } from '../shared/config';
 import { DEFAULT_MODEL_ID, modelSpec, type ModelId } from '../shared/models';
 import { isMaskResult, type MaskRequest, type CancelJob } from '../shared/messages';
 
@@ -156,16 +156,21 @@ function applyModel(next: ModelId) {
   if (enabled) discovery.rescan();
 }
 
-// React to popup changes (written to chrome.storage.local).
-chrome.storage.onChanged.addListener((_changes, area) => {
-  if (area !== 'local') return;
-  void loadSettings().then((s) => {
-    applyEnabled(s.enabled);
-    applyModel(s.modelId);
-  });
+// React to popup changes (written to chrome.storage.local). Registered through
+// watchSettings so a dead extension context can't throw here — this runs at
+// module scope, ahead of init(), and a throw would take the whole content
+// script down with it.
+watchSettings((s) => {
+  applyEnabled(s.enabled);
+  applyModel(s.modelId);
 });
 
 async function init() {
+  const storageProblem = storageUnavailableReason();
+  if (storageProblem) {
+    console.warn(`[foodmask][content] ${storageProblem} — running with default settings`);
+  }
+
   const settings = await loadSettings();
   enabled = settings.enabled;
   modelId = settings.modelId;
