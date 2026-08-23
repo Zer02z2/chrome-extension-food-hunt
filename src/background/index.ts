@@ -137,6 +137,42 @@ function routeResult(result: MaskResult) {
   });
 }
 
+// Content scripts declared in the manifest are injected only into pages loaded
+// AFTER an install/update. Every tab that was already open keeps an orphaned
+// script from the previous build (its chrome.* namespaces torn down) or none at
+// all, so the HUD never appears and popup toggles reach nobody — until the user
+// manually refreshes each tab.
+//
+// Re-inject explicitly so a reload just works. This is what the manifest's
+// long-declared but previously unused "scripting" permission is for.
+async function injectIntoOpenTabs(): Promise<void> {
+  const scripts = chrome.runtime.getManifest().content_scripts ?? [];
+
+  for (const cs of scripts) {
+    const files = cs.js ?? [];
+    if (files.length === 0 || !cs.matches) continue;
+
+    // tabs.query can filter by url thanks to our <all_urls> host permissions,
+    // so no extra "tabs" permission is needed.
+    const tabs = await chrome.tabs.query({ url: cs.matches });
+    for (const tab of tabs) {
+      if (tab.id == null) continue;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: cs.all_frames ?? false },
+          files,
+          injectImmediately: true,
+        });
+      } catch (err) {
+        // Restricted pages (chrome://, the Web Store, PDF viewers, file:// without
+        // access) reject injection. Expected and harmless — skip them quietly.
+        console.debug('[foodmask][sw] skip tab', tab.id, (err as Error)?.message ?? err);
+      }
+    }
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[foodmask][sw] onInstalled');
+  void injectIntoOpenTabs();
 });

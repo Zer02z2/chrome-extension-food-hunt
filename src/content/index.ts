@@ -11,6 +11,18 @@ import { isMaskResult, type MaskRequest, type CancelJob } from '../shared/messag
 
 console.log('[foodmask][content] loaded on', location.href);
 
+// The service worker re-injects this script into already-open tabs after an
+// install/update, which can land on a tab that already has a live copy. Detect
+// that and stay inert rather than mounting a second HUD and double-queueing
+// every image.
+declare global {
+  interface Window {
+    __foodmaskContentActive?: boolean;
+  }
+}
+const alreadyActive = window.__foodmaskContentActive === true;
+window.__foodmaskContentActive = true;
+
 const registry = new Map<string, HTMLImageElement>();
 const requestByImg = new Map<string, string>(); // imgId -> requestId (in-flight)
 const hud = new StatusHud();
@@ -161,6 +173,7 @@ function applyModel(next: ModelId) {
 // module scope, ahead of init(), and a throw would take the whole content
 // script down with it.
 watchSettings((s) => {
+  if (alreadyActive) return; // a live copy owns this tab
   applyEnabled(s.enabled);
   applyModel(s.modelId);
 });
@@ -185,7 +198,9 @@ async function init() {
   console.log('[foodmask][content] initialized, enabled =', enabled, 'model =', modelId);
 }
 
-if (document.body) {
+if (alreadyActive) {
+  console.debug('[foodmask][content] already active in this tab; ignoring duplicate injection');
+} else if (document.body) {
   void init();
 } else {
   document.addEventListener('DOMContentLoaded', () => void init(), { once: true });
