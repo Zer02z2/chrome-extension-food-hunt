@@ -76,7 +76,6 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
           imgId: msg.imgId,
           imageUrl: msg.imageUrl,
           modelId: current.modelId,
-          blurPx: current.blurPx,
         };
         await chrome.runtime.sendMessage(job);
       } catch (err) {

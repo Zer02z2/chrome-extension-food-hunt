@@ -1,5 +1,10 @@
-// Turns a food verdict plus the original image into the finished overlay:
-// blurred food where the model found food, fully transparent everywhere else.
+// Turns a food verdict plus the original image into the finished overlay: the
+// food's own pixels where the model found food, fully transparent everywhere
+// else.
+//
+// The overlay's ALPHA CHANNEL is the food silhouette, and the content script
+// leans on that — it derives both the white backing fill and the glowing outer
+// edge from this one image, so nothing but the cutout has to cross the wire.
 //
 // Model-agnostic by construction — it only reads the generic Verdict shape.
 
@@ -12,17 +17,13 @@ const MASK_THRESHOLD = 0.5; // binarization threshold, after sigmoid
  *
  * The mask comes from the instance prototypes when the model localized the
  * food. When it did not — no prototypes, or the projected mask came out empty —
- * the whole image is the only honest reading of a bare "yes", so we blur all of
+ * the whole image is the only honest reading of a bare "yes", so we take all of
  * it rather than silently returning nothing.
  */
-export async function buildOverlay(
-  bitmap: ImageBitmap,
-  verdict: Verdict,
-  blurPx: number,
-): Promise<string> {
+export async function buildOverlay(bitmap: ImageBitmap, verdict: Verdict): Promise<string> {
   const mask =
     projectMask(verdict) ?? solidCanvas(verdict.letterbox.srcW, verdict.letterbox.srcH);
-  return composite(bitmap, mask, blurPx);
+  return cutout(bitmap, mask);
 }
 
 // Union every instance mask and project it back to original image resolution:
@@ -96,19 +97,13 @@ function solidCanvas(width: number, height: number): OffscreenCanvas {
 
 // The overlay travels back through the service worker, and sendMessage cannot
 // carry an ImageBitmap or any transferable — hence a PNG data URL.
-async function composite(
-  bitmap: ImageBitmap,
-  mask: OffscreenCanvas,
-  blurPx: number,
-): Promise<string> {
+async function cutout(bitmap: ImageBitmap, mask: OffscreenCanvas): Promise<string> {
   const { width: w, height: h } = bitmap;
   const canvas = new OffscreenCanvas(w, h);
   const ctx = canvas.getContext('2d')!;
 
-  // 1. the whole image, blurred
-  ctx.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
+  // 1. the whole image, untouched
   ctx.drawImage(bitmap, 0, 0, w, h);
-  ctx.filter = 'none';
 
   // 2. keep only the pixels the mask marks as food
   ctx.globalCompositeOperation = 'destination-in';

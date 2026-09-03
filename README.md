@@ -1,11 +1,17 @@
 # 🍔 Food Mask
 
-A Manifest V3 Chrome extension that finds food images on any webpage and masks
-(blurs) the food in them — running **entirely on-device**. No server, no cloud
-calls, no image ever leaves the browser.
+A Manifest V3 Chrome extension that finds food images on any webpage and marks
+the food in them with an animated glowing outline — running **entirely
+on-device**. No server, no cloud calls, no image ever leaves the browser.
+
+Hover a masked food and an **EAT** button appears; press it and your own head —
+cut live out of your webcam with MediaPipe — leans in from the right to take a
+bite. Also entirely on-device: the camera stream never leaves the extension's
+own frame.
 
 Built with **CRXJS + Vite + TypeScript**, with in-browser inference via
-**ONNX Runtime Web** (WebGPU, with a WASM fallback).
+**ONNX Runtime Web** (WebGPU, with a WASM fallback) and **MediaPipe Tasks
+Vision** for the head cutout.
 
 ---
 
@@ -53,7 +59,8 @@ Five contexts, each with one job:
 | **Service worker** (`src/background`) | Router only: guarantee the offscreen doc exists, stamp settings onto jobs, correlate requests |
 | **Offscreen document** (`src/offscreen/index.ts`) | A relay. Owns the compute worker and forwards messages to it — nothing else |
 | **Compute worker** (`src/offscreen/worker.ts`) | All compute: fetch image → model → mask → overlay |
-| **Popup** (`src/popup`) | On/off toggle, blur intensity, **which detection model to use** |
+| **Popup** (`src/popup`) | On/off toggle, **which detection model to use** |
+| **Camera frame** (`src/camera`) | Webcam + MediaPipe selfie segmentation → head cutouts, on demand |
 
 Flow for one image:
 
@@ -62,16 +69,51 @@ content: IntersectionObserver sees a visible <img>
   → stamp data-foodmask-id, store in Map<id, element>
   → sendMessage(MASK_REQUEST)
 service worker: reads sender.tab.id, stores requestId→tabId
-  → ensureOffscreen(), forward as OFFSCREEN_JOB + { modelId, blurPx }
+  → ensureOffscreen(), forward as OFFSCREEN_JOB + { modelId }
 offscreen document: postMessage straight through to the worker
 worker: fetch(url) → ImageBitmap (host_permissions dodge CORS taint)
   → runModel(spec, bitmap) → { isFood, labels, detections, protos }   ← pluggable
   → not food? reply and stop
-  → food? build mask → composite blurred overlay
+  → food? build mask → cut the food's own pixels out through it
   → reply MASK_RESULT { isFood, overlayPngDataUrl? }
 service worker: requestId→tabId → tabs.sendMessage(result)
-content: Map.get(imgId) → position overlay <img> over the element
+content: Map.get(imgId) → anchor a canvas over the element, animate the outline
 ```
+
+### The EAT gag
+
+Every mask carries an invisible button at its centre that fades in on hover.
+Pressing it starts a second, independent pipeline:
+
+```
+content: EAT clicked
+  → HeadStage.mount(): one fixed full-screen canvas + a 1x1 camera <iframe>,
+    both inside a closed shadow root
+  → MessageChannel: port2 handed to the frame, nonce-checked (see src/shared/head.ts)
+  → port.postMessage({ type: 'start' })
+camera frame: getUserMedia({ video })  +  ImageSegmenter(selfie_multiclass_256x256)
+  → per frame: category mask → keep hair (1) + face-skin (3) = a head
+  → tight bbox (EMA-smoothed) → crop the video through the mask
+  → transfer the ImageBitmap back over the port
+content: every rAF, draw the latest bitmap against the target image's rect:
+    height = 1.5 x the food mask's height, parked off its right edge, overlapping
+```
+
+Rules that fall out of the design:
+
+- **One head canvas per page, ever.** Pressing EAT on another food re-targets the
+  same canvas and the same camera; pressing it again on the food being eaten
+  stops the camera and the recording indicator goes out.
+- **The head sits one z-index below the masks** (`HEAD_Z` / `LAYER_Z` in
+  `src/content/anchor.ts`), so the food always paints over the mouth.
+- **The webcam runs in an extension iframe, not in the page.** That keeps the
+  MediaPipe wasm under the extension's own CSP, keeps a 30 fps segmenter off the
+  page's main thread, and means the raw stream never exists in the page's world —
+  only the finished cutout crosses, over a port the page cannot see.
+- **First press prompts for the camera** (per site, as any cross-origin frame
+  does). Denials are reported in the HUD. `http://` pages cannot grant it at all:
+  `getUserMedia` needs a secure context, and a frame inherits that from its
+  ancestors.
 
 ### Key design decisions
 
@@ -147,20 +189,26 @@ manifest.config.ts        MV3 manifest (CRXJS)
 vite.config.ts            build config (+ plugin that drops the duplicate ORT wasm)
 scripts/
   copy-ort.mjs            copies ORT wasm/mjs into public/ort (postinstall/prebuild)
-  fetch-models.mjs        downloads both ONNX models into public/models
+  copy-mediapipe.mjs      copies MediaPipe vision wasm into public/mediapipe (idem)
+  fetch-models.mjs        downloads both ONNX models + the selfie model into public/models
+offscreen.html            host page for the compute worker (created at runtime)
+camera.html               host page for the webcam frame (iframed into the page)
 src/
-  shared/                 message contract, settings/config, model catalog
-  content/                discovery, overlay renderer, status HUD, orchestrator
+  shared/                 message contract, settings/config, model catalog, head protocol
+  content/                discovery, anchoring, scan + outline renderers, EAT button,
+                          head stage, HUD
   background/             service-worker router + offscreen lifecycle
   offscreen/
     index.ts              relay: chrome.runtime <-> the worker (~30 lines)
     worker.ts             the pipeline: queue, cache, fetch, orchestration
     model.ts              ORT bootstrap + the shared YOLOv8-seg runner
-    mask.ts               verdict + image -> blurred PNG overlay
-  popup/                  on/off, blur, and model picker
+    mask.ts               verdict + image -> food-cutout PNG overlay
+  camera/main.ts          webcam + MediaPipe head segmentation, in its own frame
+  popup/                  on/off and model picker
 public/
   ort/                    ORT runtime (git-ignored, copied from node_modules)
-  models/                 *.onnx (git-ignored, fetched)
+  mediapipe/              MediaPipe vision wasm (git-ignored, copied from node_modules)
+  models/                 *.onnx + *.tflite (git-ignored, fetched)
 ```
 
 ---
@@ -190,7 +238,7 @@ export type ModelSpec = {
 returns a `Verdict` — `{ isFood, labels, detections, protos, letterbox }` —
 where `isFood` is the whole contract and the rest is detail for drawing the mask.
 A model that cannot localize its answer leaves `protos` null and the overlay step
-blurs the whole image: the only honest reading of a bare boolean.
+takes the whole image: the only honest reading of a bare boolean.
 
 > The runner takes an `ImageBitmap`, not a URL. Fetching happens once in
 > `worker.ts` so cross-origin handling, the job queue, the result cache and
@@ -219,7 +267,7 @@ catalog.
   `background-image` foods are not handled in this MVP (noted at discovery time).
 - **`object-fit: cover/contain` misalignment.** Overlays are stretched to the
   image's rendered box (`object-fit: fill` assumption). Images displayed with
-  `cover`/`contain` cropping may have a slightly misaligned mask.
+  `cover`/`contain` cropping may have a slightly misaligned outline.
 - **WebGPU availability varies.** The WASM fallback is slower. The active provider
   is logged from the offscreen document (`provider=webgpu|wasm`).
 - **In-flight inference isn't abortable.** Cancellation drops still-queued jobs;
@@ -232,4 +280,10 @@ catalog.
 - **Offscreen lifetime** is currently unbounded for `WORKERS`, but Chrome may add
   idle-closing later. Model load is the only expensive step, so a cold restart is
   cheap.
+- **The head needs a camera and a secure context.** No webcam, a denied prompt,
+  or an `http://` page means EAT reports the failure in the HUD and does nothing.
+- **The head stage can lose the z-order fight.** It is a page-level fixed canvas
+  just under the masks, which is correct unless an image sits inside an ancestor
+  that creates its own stacking context with a low `z-index` — then the mask is
+  trapped in that context and the head paints over it.
 - Runs in the top frame only (`all_frames: false`).

@@ -1,6 +1,5 @@
-// Downloads the ONNX weights the offscreen document needs into public/models/.
-// These are large binaries that must NOT be committed (see .gitignore); fetch
-// them once after cloning.
+// Downloads the model weights into public/models/. These are large binaries
+// that must NOT be committed (see .gitignore); fetch them once after cloning.
 //
 // Both food-categorization models ship side by side and are switchable at
 // runtime from the extension popup, so by default BOTH are downloaded:
@@ -13,6 +12,13 @@
 //
 // Filenames must match `file` in src/shared/models.ts.
 //
+// A third model backs the "EAT" gag rather than food detection:
+//
+//   selfie_multiclass_256x256.tflite   MediaPipe multiclass selfie segmentation,
+//                                      run in the camera frame to cut the user's
+//                                      head (hair + face-skin) out of the webcam
+//
+
 // Usage:
 //   npm run fetch:models                          # both
 //   MODEL=coco npm run fetch:models               # just one
@@ -45,6 +51,15 @@ const MODELS = {
     url: 'https://cdn.jsdelivr.net/gh/Hyuto/yolov8-seg-onnxruntime-web@2f404048359f26bc7d00f80e9a6f10e3b19b8ced/public/model/yolov8n-seg.onnx',
     manual:
       'pip install ultralytics && yolo export model=yolov8n-seg.pt format=onnx imgsz=640 opset=12',
+  },
+  // Not a food model: the head cutout for the EAT overlay. MediaPipe publishes
+  // it under /latest/, which is stable in practice and the only URL Google
+  // documents.
+  selfie: {
+    file: 'selfie_multiclass_256x256.tflite',
+    url: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite',
+    manual:
+      'Download selfie_multiclass_256x256.tflite from https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter',
   },
 };
 

@@ -25,16 +25,21 @@ export default defineConfig({
   build: {
     target: 'esnext',
     rollupOptions: {
-      // The offscreen document is created at runtime via chrome.offscreen, so it
-      // is NOT referenced in the manifest and would not be picked up otherwise.
+      // Neither of these HTML entries is referenced from the manifest's
+      // content_scripts/background, so Rollup would not find them on its own:
+      // the offscreen document is created at runtime via chrome.offscreen, and
+      // the camera frame is iframed in by the content script.
       input: {
         offscreen: 'offscreen.html',
+        camera: 'camera.html',
       },
     },
   },
   // ONNX Runtime Web ships large prebuilt wasm; keep it out of Vite's dep pre-bundle.
+  // MediaPipe resolves its own wasm at runtime from public/mediapipe/ for the
+  // same reason.
   optimizeDeps: {
-    exclude: ['onnxruntime-web'],
+    exclude: ['onnxruntime-web', '@mediapipe/tasks-vision'],
   },
   server: {
     port: 5173,

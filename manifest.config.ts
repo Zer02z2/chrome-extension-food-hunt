@@ -29,6 +29,15 @@ export default defineManifest({
   content_security_policy: {
     extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
   },
-  // Models and the ORT wasm live in public/ and are loaded same-origin by the
-  // offscreen document, so they do not need to be web_accessible_resources.
+  // The camera frame is iframed INTO the host page by the content script, so the
+  // page must be allowed to embed it; everything it then loads (the MediaPipe
+  // wasm, the selfie model) is a same-origin subresource of an extension page
+  // and needs no listing. Same for the models and the ORT wasm under public/,
+  // which only the offscreen document reads.
+  web_accessible_resources: [
+    {
+      resources: ['camera.html'],
+      matches: ['<all_urls>'],
+    },
+  ],
 });

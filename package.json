@@ -5,9 +5,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "postinstall": "node scripts/copy-ort.mjs",
+    "postinstall": "node scripts/copy-ort.mjs && node scripts/copy-mediapipe.mjs",
     "fetch:models": "node scripts/fetch-models.mjs",
-    "prebuild": "node scripts/copy-ort.mjs",
+    "prebuild": "node scripts/copy-ort.mjs && node scripts/copy-mediapipe.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
@@ -20,6 +20,7 @@
     "vite": "^6.3.5"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "onnxruntime-web": "^1.20.1"
   }
 }

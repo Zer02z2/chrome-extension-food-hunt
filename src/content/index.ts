@@ -6,6 +6,7 @@ import { ImageDiscovery, type DiscoveredImage } from './discovery';
 import { StatusHud } from './status';
 import { OverlayManager } from './overlay';
 import { ScanlineManager } from './scanline';
+import { HeadStage } from './head';
 import { loadSettings, watchSettings } from '../shared/config';
 import { DEFAULT_MODEL_ID, MODELS, type ModelId } from '../shared/models';
 import { isMaskResult, type MaskRequest, type CancelJob } from '../shared/messages';
@@ -17,6 +18,13 @@ const requestByImg = new Map<string, string>(); // imgId -> requestId (in-flight
 const hud = new StatusHud();
 const overlays = new OverlayManager();
 const scanlines = new ScanlineManager(); // sweeping line shown while a job is in flight
+// The one webcam head on the page. It reports its own target back so a stage
+// that stops by itself — a camera failure, an image that left the DOM — also
+// releases the EAT button that was latched on.
+const head = new HeadStage({
+  onLog: (line) => hud.log(line),
+  onTargetChange: (target) => overlays.markEating(target),
+});
 
 let enabled = true;
 let modelId: ModelId = DEFAULT_MODEL_ID;
@@ -41,9 +49,17 @@ const discovery = new ImageDiscovery({
     inflightIO.unobserve(el);
     if (requestByImg.has(imgId)) cancelImage(imgId, el);
     registry.delete(imgId);
+    head.stopIf(el); // its food is stale; stop eating it
     overlays.remove(imgId); // stale content — drop its mask
   },
 });
+
+// One head canvas serves the whole page: pressing EAT on another food moves it
+// rather than mounting a second one, and pressing it again on the food being
+// eaten puts the camera away.
+function onEat(target: HTMLImageElement) {
+  head.toggle(target);
+}
 
 function queueImage(img: DiscoveredImage) {
   if (!enabled) return;
@@ -130,7 +146,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     hud.update({ food: hud.snapshot.food + 1 });
     hud.log(`food ✓ ${msg.imgId.slice(0, 6)}`);
     if (msg.overlayPngDataUrl && enabled) {
-      overlays.show(msg.imgId, target, msg.overlayPngDataUrl);
+      overlays.show(msg.imgId, target, msg.overlayPngDataUrl, onEat);
       hud.update({ masked: hud.snapshot.masked + 1 });
     }
   } else {
@@ -147,6 +163,7 @@ function applyEnabled(next: boolean) {
     hud.log('enabled');
   } else {
     discovery.stop();
+    head.stop();
     overlays.clear();
     for (const imgId of [...requestByImg.keys()]) cancelImage(imgId);
     scanlines.clear();
@@ -162,6 +179,7 @@ function applyModel(next: ModelId) {
   hud.setModel(MODELS[modelId].name);
   hud.log(`model → ${MODELS[modelId].name}`);
 
+  head.stop();
   overlays.clear();
   for (const imgId of [...requestByImg.keys()]) cancelImage(imgId);
   scanlines.clear();

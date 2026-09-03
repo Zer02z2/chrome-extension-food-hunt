@@ -19,7 +19,6 @@ import type { CancelJob, MaskResult, OffscreenJob, WorkerInit } from '../shared/
 const MAX_CACHE = 300;
 
 let modelUrls: Record<ModelId, string> | null = null;
-let lastBlurPx: number | null = null;
 
 // Keyed by model + URL: the models disagree by design, so one's verdict must
 // never be served for the other.
@@ -63,10 +62,6 @@ async function run(job: OffscreenJob): Promise<MaskResult> {
   // An image that scrolled away while queued is not worth 0.7 s of inference.
   if (cancelled.delete(job.requestId)) return done({ error: 'cancelled' });
 
-  // Overlays bake in the blur radius, so a blur change invalidates every one.
-  if (lastBlurPx !== null && lastBlurPx !== job.blurPx) cache.clear();
-  lastBlurPx = job.blurPx;
-
   const key = `${job.modelId}::${job.imageUrl}`;
   const hit = cache.get(key);
   if (hit) return done(hit);
@@ -91,7 +86,7 @@ async function run(job: OffscreenJob): Promise<MaskResult> {
     const tInfer = performance.now();
 
     const entry = verdict.isFood
-      ? { isFood: true, overlayPngDataUrl: await buildOverlay(bitmap, verdict, job.blurPx) }
+      ? { isFood: true, overlayPngDataUrl: await buildOverlay(bitmap, verdict) }
       : { isFood: false };
 
     remember(key, entry);

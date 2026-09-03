@@ -2,12 +2,12 @@
 // an image while its verdict is still in flight.
 //
 // It is a transparent <canvas> pinned over the image with the same AnchoredLayer
-// the finished mask uses, so it lands in the image's containing block and tracks
-// it through scrolls and reflows. The manager only mounts and unmounts; a single
-// requestAnimationFrame loop drives every visible scanner, and it stops
-// altogether once the last one is unmounted.
+// the finished outline uses, so it lands in the image's containing block and
+// tracks it through scrolls and reflows. The manager only mounts and unmounts;
+// the frames come from the page-wide loop in ./loop.
 
 import { AnchoredLayer } from './anchor';
+import { addFrameTask, removeFrameTask, type FrameTask } from './loop';
 
 const SWEEP_MS = 1150; // one full left-to-right pass
 const GAP_MS = 260; // dark beat before the next pass, so passes read as distinct
@@ -24,23 +24,11 @@ const CORE = '214, 234, 255'; // near-white core, so the line reads on any image
 
 const MAX_EDGE = 2048; // cap the backing store on very large images
 
-// Every mounted scanner, driven by one shared rAF loop.
-const active = new Set<Scanner>();
-let rafId = 0;
-
-function tick(now: number) {
-  for (const scanner of active) scanner.draw(now);
-  rafId = active.size > 0 ? requestAnimationFrame(tick) : 0;
-}
-
-function ensureLoop() {
-  if (rafId === 0 && active.size > 0) rafId = requestAnimationFrame(tick);
-}
-
 class Scanner {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D | null;
   private layer: AnchoredLayer;
+  private task: FrameTask;
   private startedAt = performance.now();
 
   private cssW = 0;
@@ -49,6 +37,7 @@ class Scanner {
   private dpr = 0;
 
   constructor(target: HTMLImageElement, onDetach: () => void) {
+    this.task = (now) => this.draw(now);
     this.canvas = document.createElement('canvas');
     this.canvas.style.cssText =
       'display:block;width:100%;height:100%;margin:0;padding:0;border:0;background:transparent';
@@ -60,9 +49,11 @@ class Scanner {
       onResize: (w, h) => this.resize(w, h),
     });
     this.layer.shadow.appendChild(this.canvas);
+    addFrameTask(this.task);
   }
 
   destroy() {
+    removeFrameTask(this.task);
     this.layer.destroy();
   }
 
@@ -80,7 +71,7 @@ class Scanner {
     if (this.canvas.height !== h) this.canvas.height = h;
   }
 
-  draw(now: number) {
+  private draw(now: number) {
     const ctx = this.ctx;
     if (!ctx) return;
 
@@ -144,28 +135,21 @@ export class ScanlineManager {
 
     const scanner = new Scanner(target, () => {
       // The image left the DOM; the layer already tore itself down.
-      if (this.scanners.get(imgId) === scanner) this.drop(imgId, scanner);
+      if (this.scanners.get(imgId) === scanner) this.stop(imgId);
     });
 
     this.scanners.set(imgId, scanner);
-    active.add(scanner);
-    ensureLoop();
   }
 
   /** Stop and remove the animation for `imgId`, if any. */
   stop(imgId: string) {
     const scanner = this.scanners.get(imgId);
     if (!scanner) return;
-    this.drop(imgId, scanner);
+    this.scanners.delete(imgId);
     scanner.destroy();
   }
 
   clear() {
     for (const imgId of [...this.scanners.keys()]) this.stop(imgId);
-  }
-
-  private drop(imgId: string, scanner: Scanner) {
-    this.scanners.delete(imgId);
-    active.delete(scanner); // the loop ends itself on its next frame
   }
 }

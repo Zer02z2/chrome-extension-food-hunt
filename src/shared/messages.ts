@@ -24,7 +24,6 @@ export type OffscreenJob = {
   imgId: string;
   imageUrl: string;
   modelId: ModelId;
-  blurPx: number;
 };
 
 // worker -> offscreen -> service worker -> content

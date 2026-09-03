@@ -16,7 +16,11 @@ type Anchor =
   | { mode: 'element'; host: HTMLElement } // inside the image's containing block
   | { mode: 'document' }; // no containing block anywhere: page coordinates
 
+// The stacking ladder, top down: HUD, then the food masks, then the head stage.
+// The head sits directly under the masks so a food image always paints over the
+// mouth reaching for it.
 export const LAYER_Z = '2147483646'; // one below the HUD
+export const HEAD_Z = '2147483645'; // one below the masks — see ./head.ts
 
 // Properties that decide where a layer lands. Page rules must not win.
 const BASE_STYLE: Record<string, string> = {

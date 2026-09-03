@@ -4,13 +4,11 @@ import { DEFAULT_MODEL_ID, isModelId, type ModelId } from './models';
 
 export type Settings = {
   enabled: boolean;
-  blurPx: number;
   modelId: ModelId;
 };
 
 export const DEFAULTS: Settings = {
   enabled: true,
-  blurPx: 16,
   modelId: DEFAULT_MODEL_ID,
 };
 
@@ -35,7 +33,6 @@ export async function loadSettings(): Promise<Settings> {
   const stored = (await area.get(STORAGE_KEY))[STORAGE_KEY] as Partial<Settings> | undefined;
   return {
     enabled: stored?.enabled ?? DEFAULTS.enabled,
-    blurPx: stored?.blurPx ?? DEFAULTS.blurPx,
     // Validate rather than trust: an id from an older build must not wedge the
     // pipeline on a model that no longer exists.
     modelId: isModelId(stored?.modelId) ? stored.modelId : DEFAULTS.modelId,

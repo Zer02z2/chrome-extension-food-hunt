@@ -11,7 +11,9 @@ dist-zip/
 
 # Downloaded model / runtime assets (fetched via scripts, not committed)
 public/ort/
+public/mediapipe/
 public/models/*.onnx
+public/models/*.tflite
 
 # Vite / cache
 .vite/

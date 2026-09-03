@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Food Mask — Camera</title>
+    <style>
+      /* Framed into arbitrary pages at 1x1 and never seen. Transparent so a
+         future debug build can size it up without a white plate appearing. */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- No UI. This document exists only to hold the webcam stream and run the
+         MediaPipe segmenter off the host page's main thread. -->
+    <script type="module" src="/src/camera/main.ts"></script>
+  </body>
+</html>
